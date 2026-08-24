@@ -16,6 +16,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
 
 - **`fzf`** — the fuzzy picker (`brew install fzf`). Required for the intended
   overlay; without it a plain numbered prompt is used.
+- **`glow`** — optional (`brew install glow`); renders the issue pane's markdown.
+  Without it the pane prints the same plain-text panel as before.
 - **A Linear personal API key** — Linear → Settings → Security & access → API →
   create a personal key. Put it in the plugin config, or export it as
   `LINEAR_API_KEY` (below).
@@ -83,11 +85,15 @@ creates + focuses a worktree on the issue's branch. If a worktree for that branc
 already exists, it is opened instead.
 
 With `showIssueDetails: true`, a fresh create also opens a pane above the agent
-pane in the new workspace showing
-the issue's details (identifier, title, state, assignee, description). The plugin
-fetches these from Linear with your `linearApiKey` and renders them itself — no
-extra CLI needed. Skipped when an existing worktree is re-opened, to avoid stacking
-duplicate panes.
+pane in the new workspace showing the issue's details (identifier, title, state,
+assignee, priority, estimate, project, cycle, labels, the description, and the
+comment threads oldest-first). The plugin fetches these from Linear with your
+`linearApiKey` and renders them itself — no extra CLI needed. Skipped when an
+existing worktree is re-opened, to avoid stacking duplicate panes.
+
+With `glow` installed the description and comments are rendered as markdown at
+the pane's width, and a resize re-renders to fit. Without it — or when the pane's
+output is not a terminal — the same content prints as plain text.
 
 ## Develop
 
