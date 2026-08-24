@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../lib/config.js';
 import { fetchIssue } from '../lib/linear.js';
 import { formatIssue, formatIssueMarkdown } from '../lib/render.js';
@@ -21,13 +23,18 @@ function paneWidth() {
 // so typing into a finished pane would print stray characters over the issue, and the
 // cursor left sitting below the text reads as an input line. Raw mode stops the echo (and
 // with it any interpretation of Ctrl-C, so quit on it explicitly).
-function hold() {
+//
+// Called again after every re-render, so the listeners are wired once: a pair per render
+// would trip Node's 11-listener warning onto stderr, straight into the rendered pane.
+let wired = false;
+export function hold() {
   process.stdout.write('\x1b[?25l');
-  const restore = () => process.stdout.write('\x1b[?25h');
-  process.on('exit', restore);
-  if (!process.stdin.isTTY) return process.stdin.resume();
-  process.stdin.setRawMode(true);
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
+  if (wired) return;
+  wired = true;
+  process.on('exit', () => process.stdout.write('\x1b[?25h'));
+  if (!process.stdin.isTTY) return;
   process.stdin.on('data', (buf) => {
     if (buf.includes(0x03) || buf.includes(0x04) || buf.includes(0x71)) process.exit(0);  // Ctrl-C, Ctrl-D, q
   });
@@ -41,7 +48,7 @@ function hold() {
 // selection stay the host's, exactly as in any other pane. A pager would own the mouse
 // (its own tracking, so selection needs shift) or, without --mouse, leave the wheel
 // scrolling only the part already paged through.
-function renderWithGlow(markdown, fallback) {
+export function renderWithGlow(markdown, fallback) {
   if (!process.stdout.isTTY) return false;
   if (spawnSync('sh', ['-c', 'command -v glow']).status !== 0) return false;
   let child = null;
@@ -102,4 +109,6 @@ async function main() {
   }
 }
 
-main();
+// Only when herdr runs this as the pane command — importing it (see test/issue.test.js)
+// must not fetch from Linear or take over the tty.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) main();

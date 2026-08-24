@@ -63,6 +63,18 @@ test('formatIssueMarkdown falls back to the plain panel on an error', () => {
   assert.match(formatIssueMarkdown(null), /Could not load issue: unknown error/);
 });
 
+// The no-glow path is a first-class output, not a degraded one: fetchIssue hands it the
+// same enriched issue the markdown path gets, so it must stay clean as fields are added.
+test('formatIssue renders the enriched issue without leaking objects or undefined', () => {
+  const out = formatIssue(RICH);
+  assert.match(out, /^BIT-123 {2}Do it$/m);
+  assert.match(out, /^state: In Progress {4}assignee: Sven$/m);
+  assert.match(out, /^https:\/\/l\/BIT-123$/m);
+  assert.match(out, /- \[ \] todo/);
+  assert.doesNotMatch(out, /\[object|undefined|NaN/);
+  assert.ok(out.endsWith('\n'), 'ends with a newline');
+});
+
 test('formatIssue renders an error placeholder', () => {
   assert.match(formatIssue({ identifier: 'BIT-1', error: 'boom' }), /Could not load BIT-1: boom/);
   assert.match(formatIssue(null), /Could not load issue: unknown error/);
