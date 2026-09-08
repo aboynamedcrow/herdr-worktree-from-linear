@@ -30,6 +30,10 @@ herdr plugin install tdi/herdr-worktree-from-linear
 
 ```json
 {
+  "linearApiKeyEnvByTeam": {
+    "HSYS": "LINEAR_API_KEY_HSYS",
+    "IC": "LINEAR_API_KEY_EMBER"
+  },
   "linearApiKeyEnvByPath": [
     { "contains": "hsys", "env": "LINEAR_API_KEY_HSYS" }
   ],
@@ -47,6 +51,16 @@ herdr plugin install tdi/herdr-worktree-from-linear
 }
 ```
 
+- `linearApiKeyEnvByTeam` — optional uppercase issue-team to environment-variable
+  map for the issue-details pane. `HSYS-4619` selects `HSYS` even outside Git or
+  when focused on a different checkout. An unmapped team fails explicitly. When
+  no legacy inline `linearApiKey` is set, a missing selected environment key
+  also fails rather than trying another workspace. Remove that legacy inline
+  key to enable per-team credential selection; otherwise it still overrides
+  the selected environment key for mapped teams, for backward compatibility.
+  This does not combine workspace issue lists in the worktree picker. Map every
+  team whose issues can be selected: a third team may appear through the picker's
+  repository route but its detail pane will refuse to load until that team is mapped.
 - `linearApiKeyEnvByPath` — optional ordered path rules for selecting an API
   key environment variable. The first rule whose `contains` substring appears
   in the repository root wins; matching is case-insensitive.
@@ -92,6 +106,11 @@ reads `LINEAR_API_KEY_HSYS`; every other repository reads
 `LINEAR_API_KEY_EMBER`. Rules are checked in order and the first match wins.
 Only the variable names belong in `config.json`; export their key values into
 the herdr server's inherited environment.
+
+For issue-detail views, also configure `linearApiKeyEnvByTeam` as in the complete
+example above. Identifier-based routing takes precedence over path inference;
+the picker (which has no selected identifier yet) keeps repository routing.
+No key values are copied between workspaces or persisted by this routing.
 
 When neither `linearApiKeyEnvByPath` nor `linearApiKeyEnvDefault` is configured,
 the legacy behavior is unchanged: `linearApiKey` in `config.json` wins, then the

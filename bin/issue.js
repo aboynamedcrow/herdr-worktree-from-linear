@@ -91,10 +91,10 @@ export function renderWithGlow(markdown, fallback) {
 // Runs as a herdr plugin pane (see [[panes]] "issue"), so HERDR_PLUGIN_CONFIG_DIR is set.
 // The issue identifier is passed in via --env HERDR_WFP_ISSUE when the pane is opened.
 async function main() {
-  const identifier = process.env.HERDR_WFP_ISSUE || '';
+  const identifier = (process.env.HERDR_WFP_ISSUE || '').trim().toUpperCase();
   let issue;
   try {
-    const config = loadConfig(process.env.HERDR_PLUGIN_CONFIG_DIR);
+    const config = loadConfig(process.env.HERDR_PLUGIN_CONFIG_DIR, undefined, process.env, identifier);
     issue = await fetchIssue(config, identifier);
   } catch (err) {
     issue = { identifier, error: err.message };
