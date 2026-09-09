@@ -15,8 +15,8 @@ test('localBranchExists reflects rev-parse status', () => {
 });
 
 test('buildWorktreeArgs adds --base only on create', () => {
-  assert.deepEqual(buildWorktreeArgs(false, '/repo', 'b', 'origin/main'), ['worktree', 'create', '--cwd', '/repo', '--branch', 'b', '--base', 'origin/main', '--focus', '--json']);
-  assert.deepEqual(buildWorktreeArgs(true, '/repo', 'b', 'origin/main'), ['worktree', 'open', '--cwd', '/repo', '--branch', 'b', '--focus', '--json']);
+  assert.deepEqual(buildWorktreeArgs(false, '/repo', 'b', 'origin/main'), ['worktree', 'create', '--cwd', '/repo', '--branch', 'b', '--base', 'origin/main', '--focus']);
+  assert.deepEqual(buildWorktreeArgs(true, '/repo', 'b', 'origin/main'), ['worktree', 'open', '--cwd', '/repo', '--branch', 'b', '--focus']);
 });
 
 test('createOrOpenWorktree fetches base then creates when nothing exists', () => {
@@ -30,7 +30,7 @@ test('createOrOpenWorktree fetches base then creates when nothing exists', () =>
   const res = createOrOpenWorktree('/repo', 'tdi/bit-1', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
   assert.equal(res.exists, false);
   assert.ok(calls.some((c) => c[0] === 'git' && c.includes('fetch') && c.includes('main')));
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-1', '--base', 'origin/main', '--focus', '--json']);
+  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-1', '--base', 'origin/main', '--focus']);
 });
 
 test('createOrOpenWorktree skips fetch when base needsFetch is false (head)', () => {
@@ -43,7 +43,7 @@ test('createOrOpenWorktree skips fetch when base needsFetch is false (head)', ()
   };
   const res = createOrOpenWorktree('/repo', 'tdi/bit-2', { baseRef: 'HEAD', needsFetch: false, baseBranch: null }, exec, 'herdr');
   assert.equal(calls.some((c) => c.includes('fetch')), false);
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-2', '--base', 'HEAD', '--focus', '--json']);
+  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-2', '--base', 'HEAD', '--focus']);
 });
 
 test('createOrOpenWorktree opens without fetching when the worktree exists', () => {
@@ -56,7 +56,7 @@ test('createOrOpenWorktree opens without fetching when the worktree exists', () 
   const res = createOrOpenWorktree('/repo', 'tdi/bit-3', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
   assert.equal(res.exists, true);
   assert.equal(calls.some((c) => c.includes('fetch')), false);
-  assert.deepEqual(res.args, ['worktree', 'open', '--cwd', '/repo', '--branch', 'tdi/bit-3', '--focus', '--json']);
+  assert.deepEqual(res.args, ['worktree', 'open', '--cwd', '/repo', '--branch', 'tdi/bit-3', '--focus']);
 });
 
 test('createOrOpenWorktree creates without fetching when the local branch exists but no worktree', () => {
@@ -73,7 +73,7 @@ test('createOrOpenWorktree creates without fetching when the local branch exists
   const res = createOrOpenWorktree('/repo', 'tdi/bit-4', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
   assert.equal(res.exists, false); // no worktree existed → this is a create
   assert.equal(calls.some((c) => c.includes('fetch')), false); // branch already local → no fetch
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-4', '--base', 'origin/main', '--focus', '--json']);
+  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-4', '--base', 'origin/main', '--focus']);
 });
 
 test('createOrOpenWorktree throws when fetch fails', () => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseViewerArgs } from '../bin/issue.js';
+import { buildViewerCommand } from '../lib/slot.js';
 
 // A stand-in for the herdr CLI that only records what it was asked to do. Every native
 // call the viewer can make goes through HERDR_BIN_PATH, so this proves both that the
@@ -122,7 +123,7 @@ test('a viewer with no pane makes no native call at all', (t) => {
   assert.deepEqual(stub.calls(), []);
 });
 
-test('a failed fetch is shown in the slot instead of taking the viewer down', (t) => {
+test('a failed fetch hands the slot back instead of parking it on an error', (t) => {
   const stub = stubHerdr(t);
   const dir = configDir(t, TEAM_CONFIG);
   const res = runViewer({
@@ -130,9 +131,9 @@ test('a failed fetch is shown in the slot instead of taking the viewer down', (t
     env: { KEY_IC: 'synthetic-ic', HERDR_BIN_PATH: stub.bin },
     api: 'globalThis.fetch = async () => { throw new Error("network is down"); };',
   });
-  // Nothing about the worktree or the layout depends on the fetch succeeding, so the
-  // viewer reports and holds rather than exiting non-zero into a bare prompt.
-  assert.equal(res.status, 0, res.stderr);
+  // The worktree and the layout are already correct, so the failure is the viewer's
+  // alone: it says why, exits non-zero, and returns the shell it was typed into.
+  assert.equal(res.status, 1, res.stderr);
   assert.match(res.stdout, /Could not load IC-72: .*network is down/);
   assert.doesNotMatch(res.stdout, /synthetic-ic/);
   // It still owned the pane, so it still gives the tokens back.
@@ -150,4 +151,115 @@ test('a missing workspace key fails visibly without naming another workspace key
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /KEY_HSYS environment variable/);
   assert.doesNotMatch(res.stdout, /synthetic-ic/);
+});
+
+// ---------------------------------------------------------------------------
+// Real terminal behavior
+//
+// Without a tty the viewer's hold path is unobservable: stdin ends, the process falls off
+// the end of the event loop, and every exit looks the same. These run the real entrypoint
+// under a real pty, so `hold()` actually holds. python3's pty module is stdlib on macOS
+// and Linux; if it is missing the test says so rather than silently passing.
+const PTY = `import os, pty, sys; raise SystemExit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))`;
+
+function ptyAvailable() {
+  return spawnSync('python3', ['-c', 'import pty, os'], { encoding: 'utf8' }).status === 0;
+}
+
+function runViewerOnPty({ args, env = {}, input = '', timeout = 10000 }) {
+  return spawnSync('python3', ['-c', PTY, process.execPath, resolve('bin/issue.js'), ...args], {
+    input, timeout, encoding: 'utf8', env: { ...process.env, ...env },
+  });
+}
+
+// hold() hides the cursor on the way in and shows it again on exit, so those escapes are
+// the observable difference between "held the pane" and "returned to the shell".
+const HIDE_CURSOR = '\x1b[?25l';
+
+test('on a real terminal a failed fetch in an owned slot returns to the shell', (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const dir = configDir(t, TEAM_CONFIG);
+  // No KEY_IC, so the key lookup fails before any request is made.
+  const res = runViewerOnPty({
+    args: ['--issue', 'IC-72', '--config-dir', dir, '--cwd', '/repos/dot', '--pane', 'w9:p2', '--invocation', 'inv0'],
+    env: { HERDR_BIN_PATH: stub.bin, KEY_IC: '', KEY_HSYS: '' },
+  });
+  assert.equal(res.signal, null, 'it exited on its own rather than being killed');
+  assert.equal(res.status, 1, res.stdout);
+  assert.match(res.stdout, /Could not load IC-72/);
+  assert.equal(res.stdout.includes(HIDE_CURSOR), false, 'it did not take the tty and hold');
+  // The shell it was typed into gets its pane back, tokens and all.
+  assert.equal(stub.calls().length, 2);
+  assert.match(stub.calls()[1], /--clear-token/);
+});
+
+test('on a real terminal a plugin pane still holds, and q closes it', (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const dir = configDir(t, TEAM_CONFIG);
+  // No --pane: this is the [[panes]] "issue" entrypoint, which has no shell to return to.
+  // Exiting would close the pane and take the message with it, so it holds instead.
+  const res = runViewerOnPty({
+    args: ['--issue', 'IC-72', '--config-dir', dir, '--cwd', '/repos/dot'],
+    env: { HERDR_BIN_PATH: stub.bin, KEY_IC: '', KEY_HSYS: '' },
+    input: 'q',
+  });
+  assert.equal(res.signal, null, 'q closed it rather than the timeout killing it');
+  assert.equal(res.status, 0, res.stdout);
+  assert.match(res.stdout, /Could not load IC-72/);
+  assert.ok(res.stdout.includes(HIDE_CURSOR), 'it held the pane open');
+  assert.deepEqual(stub.calls(), [], 'it owns no slot, so it publishes nothing');
+});
+
+// ---------------------------------------------------------------------------
+// The command lib/slot.js types, executed for real
+
+const HOSTILE = '--require /nonexistent/hostile-preload.js';
+
+function viewerCommandFor(dir) {
+  const built = buildViewerCommand({
+    nodePath: process.execPath,
+    scriptPath: resolve('bin/issue.js'),
+    identifier: 'IC-72',
+    invocation: 'inv0',
+    configDir: dir,
+    cwd: resolve('.'),
+    paneId: 'w9:p2',
+  });
+  assert.equal(built.ok, true, built.error);
+  return built.command;
+}
+
+// The fixture has to be genuinely hostile, or the test below proves nothing: a NODE_OPTIONS
+// that survives makes node fail before the viewer runs at all.
+test('the hostile NODE_OPTIONS fixture really does break an unprotected node', (t) => {
+  const dir = configDir(t, TEAM_CONFIG);
+  const unprotected = viewerCommandFor(dir).replace(/^'\/usr\/bin\/env' '-u' 'NODE_OPTIONS' /, '');
+  const res = spawnSync('sh', ['-c', unprotected], {
+    input: '', timeout: 10000, encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: HOSTILE, KEY_IC: '', KEY_HSYS: '' },
+  });
+  // node dies in preload, so the viewer's own message never appears. (Its exit status is
+  // 1 too, which is exactly why stderr and stdout are what distinguish the two runs.)
+  assert.match(res.stderr, /hostile-preload/);
+  assert.doesNotMatch(res.stdout, /KEY_IC environment variable/, 'the script never ran');
+});
+
+test('the typed command runs the viewer with NODE_OPTIONS cleared', (t) => {
+  const stub = stubHerdr(t);
+  const dir = configDir(t, TEAM_CONFIG);
+  const res = spawnSync('sh', ['-c', viewerCommandFor(dir)], {
+    input: '', timeout: 10000, encoding: 'utf8',
+    // NODE_OPTIONS is inherited by anything the shell starts, and it can inject code into
+    // node before a line of the viewer runs. Everything else in the environment is kept:
+    // the Linear keys live there.
+    env: { ...process.env, NODE_OPTIONS: HOSTILE, HERDR_BIN_PATH: stub.bin, KEY_IC: '', KEY_HSYS: '' },
+  });
+  assert.doesNotMatch(res.stderr, /hostile-preload/, 'the injected preload never loaded');
+  // It got far enough to route by team and report the missing key, which is only reachable
+  // once node has actually started this script.
+  assert.equal(res.status, 1, res.stderr);
+  assert.match(res.stdout, /KEY_IC environment variable/);
+  assert.equal(stub.calls().length, 2, 'and it published and cleared its slot identity');
 });
