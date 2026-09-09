@@ -46,6 +46,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
   "placement": "right",
   "fzfLayout": "down",
   "showIssueDetails": true,
+  "issueTabLabel": "Work",
+  "issuePaneLabel": "Issue",
   "popupWidth": "80%",
   "popupHeight": "70%"
 }
@@ -82,8 +84,17 @@ herdr plugin install tdi/herdr-worktree-from-linear
   (full-screen), or `"popup"` (centered floating window). `left`/`top` open a
   right/down split then swap into place.
 - `fzfLayout` — `"down"` (default, search bar at the bottom) or `"top"` (search bar at the top). The picker renders as a compact window either way.
-- `showIssueDetails` — optional; when `true`, a fresh worktree create also opens
-  a pane showing the picked issue's details (see below). Default `false`.
+- `showIssueDetails` — optional; when `true`, opening a worktree also shows the
+  picked issue's details in a pane your layout already provides (see below).
+  Default `false`, and it needs `issueTabLabel` and `issuePaneLabel`.
+- `issueTabLabel` / `issuePaneLabel` — the tab label, and the pane label inside
+  that tab, that name the slot the issue view is delivered to. There is no
+  default for either: the plugin will not guess which of your panes to type
+  into. Both must match your layout exactly, and both must be unique — a
+  renamed or duplicated label is reported rather than resolved.
+- `issueSlotSettleMs` / `issueSlotPollMs` — how long to wait for a layout that
+  is still being applied, and how often to look. Defaults `5000` and `200`
+  milliseconds. The wait is always finite.
 - `popupWidth` / `popupHeight` — size of the `popup` placement, as a percentage
   (`"80%"`) or a terminal-cell count (`120`). Only used when `placement` is
   `popup`. Defaults `80%` × `70%`.
@@ -136,12 +147,38 @@ it from the action menu. It lists your team's active issues; pick one and herdr
 creates + focuses a worktree on the issue's branch. If a worktree for that branch
 already exists, it is opened instead.
 
-With `showIssueDetails: true`, a fresh create also opens a pane above the agent
-pane in the new workspace showing the issue's details (identifier, title, state,
-assignee, priority, estimate, project, cycle, labels, the description, and the
-comment threads oldest-first). The plugin fetches these from Linear with your
-`linearApiKey` and renders them itself — no extra CLI needed. Skipped when an
-existing worktree is re-opened, to avoid stacking duplicate panes.
+### The issue slot
+
+With `showIssueDetails: true`, opening a worktree — freshly created or re-opened —
+also shows the picked issue in a pane your own layout already provides: the pane
+labeled `issuePaneLabel` in the tab labeled `issueTabLabel`, inside the workspace
+herdr just reported. It shows the identifier, title, state, assignee, priority,
+estimate, project, cycle, labels, the description, and the comment threads
+oldest-first, fetched from Linear with your key and rendered by the plugin — no
+extra CLI needed.
+
+Delivery never changes your layout. It does not split, swap, move, resize or
+close anything; it types one command into a slot that is already sitting at an
+idle shell prompt. Everything else is reported and left alone:
+
+- The tab or pane label is missing, renamed, or matches more than one tab or pane.
+- The layout has not finished being applied within `issueSlotSettleMs`.
+- herdr could not be asked, or answered something unreadable.
+- The slot is busy: an agent, an editor, a command — anything that is not the
+  slot's own shell sitting at its prompt.
+
+In all of those the worktree is already open and its layout untouched; only the
+issue view is skipped, with a line saying why.
+
+Invoking the action again for the same issue focuses the viewer that is already
+there rather than restarting it, and never sends it input. That only happens when the pane's live
+foreground process and the metadata it published agree on both the issue and the
+invocation that started it — leftover metadata from a viewer that has since
+exited proves nothing on its own. A viewer showing a different issue counts as
+busy. `q` or `Ctrl-C` closes the viewer and hands the shell back.
+
+If Linear cannot be reached, the viewer says so in the slot: the worktree and the
+layout that got you there are already correct, so nothing is rolled back.
 
 With `glow` installed the description and comments are rendered as markdown at
 the pane's width, and a resize re-renders to fit. Without it — or when the pane's

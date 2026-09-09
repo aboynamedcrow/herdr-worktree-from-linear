@@ -9,5 +9,8 @@
   "fzfLayout": "down",
   "placement": "right",
   "popupWidth": "80%",
-  "popupHeight": "70%"
+  "popupHeight": "70%",
+  "showIssueDetails": true,
+  "issueTabLabel": "Work",
+  "issuePaneLabel": "Issue"
 }
