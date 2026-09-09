@@ -25,7 +25,7 @@ function withEnvKey(value, fn) {
 
 test('loadConfig merges defaults and keeps the api key', () => {
   const dir = withDir('{"linearApiKey":"k"}');
-  assert.deepEqual(loadConfig(dir), { issueLimit: 50, base: 'default', fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
+  assert.deepEqual(loadConfig(dir), { issueLimit: 50, fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -104,7 +104,7 @@ test('loadConfig uses the configured default environment variable when no path m
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('loadConfig resolves the current repo when the caller does not supply a repo root', () => {
+test('loadConfig never infers caller scope from the plugin executable directory', () => {
   const dir = withDir(JSON.stringify({
     linearApiKeyEnvByPath: [
       { contains: 'HERDR-WORKTREE-FROM-LINEAR', env: 'LINEAR_API_KEY_MATCH' },
@@ -115,7 +115,7 @@ test('loadConfig resolves the current repo when the caller does not supply a rep
     LINEAR_API_KEY_MATCH: 'test-key-1',
     LINEAR_API_KEY_DEFAULT: 'test-key-default',
   };
-  assert.equal(loadConfig(dir, undefined, env).linearApiKey, 'test-key-1');
+  assert.equal(loadConfig(dir, undefined, env).linearApiKey, 'test-key-default');
   rmSync(dir, { recursive: true, force: true });
 });
 

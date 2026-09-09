@@ -4,7 +4,7 @@ import { lstatSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  createSocketHome, hostMetadataArgs, hostMetadataClearArgs, judgeRequest, resolveHostContext,
+  createSocketHome, publishHost, hostMetadataArgs, hostMetadataClearArgs, judgeRequest, resolveHostContext,
   startHost,
 } from '../lib/host.js';
 import {
@@ -151,12 +151,11 @@ test('a socket path something already holds is refused rather than bound', (t) =
   // not empty instead: a leftover file, or a symlink pointing somewhere else, must stop
   // the host rather than be bound over.
   for (const plant of [
-    (dir) => writeFileSync(join(dir, 'taken.sock'), 'not a socket'),
-    (dir) => symlinkSync('/etc/passwd', join(dir, 'taken.sock')),
+    (dir) => writeFileSync(join(dir, 's'), 'not a socket'),
+    (dir) => symlinkSync('/etc/passwd', join(dir, 's')),
   ]) {
     const home = createSocketHome({
       base,
-      random: () => 'taken',
       mkdtemp: (prefix) => { const dir = mkdtempSync(prefix); plant(dir); return dir; },
     });
     assert.equal(home.ok, false);
@@ -476,4 +475,12 @@ test('a host that cannot publish stops listening instead of leaving a socket beh
   // Nothing is listening and nothing is left on disk: no socket, no directory.
   const leftovers = readdirSync(tmpdir()).filter((name) => name.startsWith('wfl-host-') && !before.has(name));
   assert.deepEqual(leftovers, [], `left behind: ${leftovers.join(', ')}`);
+});
+
+
+test('native metadata never silently truncates the host socket path', () => {
+  const host = { paneId: PANE, pid: 4242, instance: 'i0', socketPath: '/'+ 'a'.repeat(80), checkout: '/wt' };
+  const result = publishHost(host, { herdrBin: 'herdr', exec: () => assert.fail('overlong path must not publish') });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /metadata limits/);
 });

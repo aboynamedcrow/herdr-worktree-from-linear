@@ -4,7 +4,6 @@
   ],
   "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
   "issueLimit": 50,
-  "base": "default",
   "teamKey": "BIT",
   "repos": { "BIT": "/home/you/bit-repo" },
   "fzfLayout": "down",

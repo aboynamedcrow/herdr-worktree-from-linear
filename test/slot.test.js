@@ -533,3 +533,16 @@ test('failed or malformed native replies produce a diagnostic, not a guess', asy
     assertReadOnly(calls);
   }
 });
+
+test('a fresh layout waits for host startup without sending input or an early request', async () => {
+  const startup = hostFront();
+  startup.foreground_processes.push({ pid: HOST_PID + 1, name: 'herdr', argv: ['herdr', 'pane', 'report-metadata'] });
+  let probes = 0;
+  const { exec, calls } = fakeHerdr({ ...happy(), 'pane process-info': () => processReply(++probes === 1 ? startup : hostFront()) });
+  const res = await deliver({ exec, now: clock(20), ask: async () => {
+    assert.ok(probes >= 3, 'ready host must have been read and revalidated');
+    return { ok: true, status: 'accepted' };
+  } });
+  assert.equal(res.ok, true, res.error);
+  assertReadOnly(calls);
+});
