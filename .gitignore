@@ -1,2 +1,5 @@
 node_modules/
 *.log
+
+# Added by ggshield
+.cache_ggshield

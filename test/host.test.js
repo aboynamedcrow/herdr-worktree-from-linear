@@ -459,10 +459,29 @@ test('a host that cannot publish stops listening instead of leaving a socket beh
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ linearApiKey: 'k' }));
   // A herdr that is not there at all: publishing fails immediately.
   const installed = [];
+  // Pin where the host will put its socket home, so the leftover scan below
+  // reads the directory it actually used. Without this the scan looks in
+  // tmpdir() while runtimeBase() prefers XDG_RUNTIME_DIR — set on most Linux
+  // desktops and CI runners — and the assertion passes without proving
+  // anything.
+  const runtime = tempDir(t, 'wfl-runtime-');
+  const previousRuntime = process.env.XDG_RUNTIME_DIR;
+  process.env.XDG_RUNTIME_DIR = runtime;
+  t.after(() => {
+    if (previousRuntime === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = previousRuntime;
+  });
   // Compare against what was already there: a host killed outright (SIGKILL runs no exit
   // handler) can leave a directory behind, and that is not this call's doing.
   const isSocketHome = (name) => /^wfl-[A-Za-z0-9]{6}$/.test(name);
-  const before = new Set(readdirSync(tmpdir()).filter(isSocketHome));
+  // Prove the scan is aimed where the host will actually build: a default home
+  // follows XDG_RUNTIME_DIR, so this is the directory main() is about to use.
+  const probe = createSocketHome();
+  assert.equal(probe.ok, true, probe.error);
+  assert.equal(probe.dir.startsWith(realpathSync(runtime)), true,
+    `default socket home ${probe.dir} is not under the pinned ${runtime}`);
+  rmSync(probe.dir, { recursive: true, force: true });
+  const before = new Set(readdirSync(runtime).filter(isSocketHome));
   const code = await hostMain({
     argv: ['--pane', PANE, '--config-dir', dir, '--cwd', dir],
     env: { HERDR_BIN_PATH: join(dir, 'herdr-that-does-not-exist') },
@@ -474,7 +493,7 @@ test('a host that cannot publish stops listening instead of leaving a socket beh
   assert.equal(code, 1);
   assert.equal(installed.length, 1, 'it still arranged its own cleanup');
   // Nothing is listening and nothing is left on disk: no socket, no directory.
-  const leftovers = readdirSync(tmpdir()).filter((name) => isSocketHome(name) && !before.has(name));
+  const leftovers = readdirSync(runtime).filter((name) => isSocketHome(name) && !before.has(name));
   assert.deepEqual(leftovers, [], `left behind: ${leftovers.join(', ')}`);
 });
 

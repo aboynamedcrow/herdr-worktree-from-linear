@@ -84,3 +84,26 @@ test('readPopupSize reads/validates config, falling back to defaults', () => {
   assert.deepEqual(readPopupSize(dir), { width: '80%', height: '70%' }); // missing file -> defaults
   assert.deepEqual(readPopupSize(undefined), { width: '80%', height: '70%' }); // no dir -> defaults
 });
+
+// The unit-level rule behind the launch behavior: a target pane reaches herdr
+// only for placements that accept one. Overlay and popup are refused by herdr
+// 0.9 with `invalid_params: overlay and popup plugin panes target the active
+// pane`, so passing it there fails the open instead of aiming it.
+test('openPickerArgs sends --target-pane only where herdr accepts it', () => {
+  for (const placement of ['overlay', 'popup']) {
+    const args = openPickerArgs('id', '/work/repo', placement, { targetPane: 'w1:p1' });
+    assert.equal(args.includes('--target-pane'), false, placement);
+    assert.ok(args.includes(placement), placement);
+    // Everything else the placement needs is still sent.
+    assert.ok(args.includes('--focus'), placement);
+    assert.ok(args.includes('HERDR_WFP_CWD=/work/repo'), placement);
+  }
+  for (const placement of ['right', 'left', 'down', 'top']) {
+    const args = openPickerArgs('id', '/work/repo', placement, { targetPane: 'w1:p1' });
+    assert.deepEqual(args.slice(args.indexOf('--target-pane'), args.indexOf('--target-pane') + 2),
+      ['--target-pane', 'w1:p1'], placement);
+  }
+  // popup still carries its size, which herdr does accept.
+  const popup = openPickerArgs('id', undefined, 'popup', { width: '90%', height: '60%', targetPane: 'w1:p1' });
+  assert.deepEqual(popup.slice(7), ['--placement', 'popup', '--width', '90%', '--height', '60%', '--focus']);
+});
