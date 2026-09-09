@@ -461,7 +461,8 @@ test('a host that cannot publish stops listening instead of leaving a socket beh
   const installed = [];
   // Compare against what was already there: a host killed outright (SIGKILL runs no exit
   // handler) can leave a directory behind, and that is not this call's doing.
-  const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith('wfl-host-')));
+  const isSocketHome = (name) => /^wfl-[A-Za-z0-9]{6}$/.test(name);
+  const before = new Set(readdirSync(tmpdir()).filter(isSocketHome));
   const code = await hostMain({
     argv: ['--pane', PANE, '--config-dir', dir, '--cwd', dir],
     env: { HERDR_BIN_PATH: join(dir, 'herdr-that-does-not-exist') },
@@ -473,7 +474,7 @@ test('a host that cannot publish stops listening instead of leaving a socket beh
   assert.equal(code, 1);
   assert.equal(installed.length, 1, 'it still arranged its own cleanup');
   // Nothing is listening and nothing is left on disk: no socket, no directory.
-  const leftovers = readdirSync(tmpdir()).filter((name) => name.startsWith('wfl-host-') && !before.has(name));
+  const leftovers = readdirSync(tmpdir()).filter((name) => isSocketHome(name) && !before.has(name));
   assert.deepEqual(leftovers, [], `left behind: ${leftovers.join(', ')}`);
 });
 
