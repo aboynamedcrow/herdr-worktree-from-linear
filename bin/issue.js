@@ -93,8 +93,8 @@ export function renderWithGlow(markdown, fallback) {
 //
 //   * As a herdr plugin pane (see [[panes]] "issue"): herdr sets HERDR_PLUGIN_CONFIG_DIR
 //     and the identifier arrives as --env HERDR_WFP_ISSUE.
-//   * Typed into an existing shell by lib/slot.js: nothing is inherited, so every input
-//     is an explicit flag — absolute config dir, absolute cwd, the issue, the pane to
+//   * Typed into an existing shell by lib/slot.js: context is passed in explicit
+//     flags — absolute config dir, absolute cwd, the issue, the pane to
 //     publish identity on, and the invocation token that makes this run distinguishable
 //     from the last one.
 //
