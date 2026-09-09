@@ -230,12 +230,33 @@ test('selectSlot demands exactly one labeled tab and one labeled pane inside it'
   assert.match(selectSlot([tab()], [pane({ label: 'Notes' })], WS, 'Crew', 'Issue / Utility').error, /no pane labeled/);
   // Duplicated slot.
   assert.match(selectSlot([tab()], [pane(), pane({ pane_id: 'w9:p5' })], WS, 'Crew', 'Issue / Utility').error, /2 panes labeled/);
-  // A pane in another workspace, or in another tab, is not this slot.
-  assert.match(selectSlot([tab()], [pane({ workspace_id: 'wX' })], WS, 'Crew', 'Issue / Utility').error, /no pane labeled/);
-  assert.match(selectSlot([tab()], [pane({ tab_id: 'w9:t7' })], WS, 'Crew', 'Issue / Utility').error, /no pane labeled/);
+  // A scoped inventory cannot contain a foreign workspace or an unknown tab.
+  assert.match(selectSlot([tab()], [pane({ workspace_id: 'wX' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
+  assert.match(selectSlot([tab()], [pane({ tab_id: 'w9:t7' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
   // Malformed inventory is a failure, never an empty match set treated as "renamed".
   assert.match(selectSlot(null, panes, WS, 'Crew', 'Issue / Utility').error, /no tabs/);
   assert.match(selectSlot([tab()], null, WS, 'Crew', 'Issue / Utility').error, /no panes/);
+});
+
+test('delivery refuses incomplete or conflicting scoped inventories before touching the slot', async () => {
+  const invalidTabs = [null, {}, tab({ workspace_id: undefined }), tab({ workspace_id: 'wOTHER' }),
+    tab({ tab_id: ' ' }), tab({ tab_id: TAB, label: 'Notes' })];
+  const invalidPanes = [null, {}, pane({ workspace_id: undefined }), pane({ workspace_id: 'wOTHER' }),
+    pane({ pane_id: ' ' }), pane({ tab_id: undefined }), pane({ tab_id: 'w9:t404' }),
+    pane({ pane_id: SLOT, label: 'Notes' })];
+  for (const [kind, values] of [['tab', invalidTabs], ['pane', invalidPanes]]) {
+    for (const value of values) {
+      focused = [];
+      const handlers = happy();
+      handlers[`${kind} list`] = kind === 'tab' ? tabsReply([tab(), value]) : panesReply([pane(), value]);
+      const h = fakeHerdr(handlers);
+      const result = await deliver({ exec: h.exec });
+      assert.equal(result.ok, false, `${kind}: ${JSON.stringify(value)}`);
+      assert.match(result.error, new RegExp(`invalid ${kind} inventory`));
+      assert.ok(h.calls.every((c) => c[2] === 'list'), 'no process, input or focus operation');
+      assert.deepEqual(focused, []);
+    }
+  }
 });
 
 test('classifyForeground only calls it a shell when the shell itself is in front', () => {
