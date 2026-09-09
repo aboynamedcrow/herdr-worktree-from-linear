@@ -4,7 +4,6 @@
   ],
   "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
   "issueLimit": 50,
-  "base": "default",
   "teamKey": "BIT",
   "fzfLayout": "down",
   "placement": "right",

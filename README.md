@@ -1,10 +1,6 @@
 # Worktree from Linear — herdr plugin
 
-Keybind, pick an active Linear issue from your team, and herdr opens a git
-worktree on the issue's Linear branch, based on your default branch. Worktree
-only — pair it with
-[worktree-setup](https://github.com/tdi/herdr-worktree-setup) to run per-repo
-setup on `worktree.created`.
+Pick an active Linear issue and open its worktree using Herdr Plus's shared project policy. Existing branches and registered checkout paths are preserved; multiple matches require an explicit choice. Issue details fill a configured pane in the resulting workspace.
 
 ## Install
 
@@ -13,6 +9,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
 ```
 
 ## Prerequisites
+
+- **Herdr 0.9.0 or newer** and enabled **Herdr Plus** with `plan-worktree` / `apply-worktree` support and configured `[[worktree.projects]]` policies. Open the project’s primary workspace before creating linked worktrees.
 
 - **`fzf`** — the fuzzy picker (`brew install fzf`). Required for the intended
   overlay; without it a plain numbered prompt is used.
@@ -39,7 +37,6 @@ herdr plugin install tdi/herdr-worktree-from-linear
   ],
   "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
   "issueLimit": 50,
-  "base": "default",
   "teamKey": "BIT",
   "assignedToMe": true,
   "includeTriage": true,
@@ -72,8 +69,6 @@ herdr plugin install tdi/herdr-worktree-from-linear
   explicit value still takes precedence, but new configs should keep key values
   out of `config.json` and use the environment-variable options above.
 - `issueLimit` — max issues listed (default 50).
-- `base` — where the new branch starts: `"default"` (repo default branch),
-  `"head"` (current checkout), or an explicit branch name (e.g. `"develop"`).
 - `teamKey` — optional; restrict to one team (e.g. `BIT`).
 - `assignedToMe` — optional; when `true`, only list issues assigned to you (the
   API key's user). Default `false` (all assignees).
@@ -141,16 +136,18 @@ plain shell export before `herdr`. Key values are inherited through the process
 environment and are not added to pane command arguments.
 
 `popup` opens the picker as a centered floating window that doesn't disturb your
-pane layout — it requires **herdr ≥ 0.7.4** (older servers reject it; the plugin
-still works with the other placements).
+pane layout. `overlay` also closes back to the original layout when the picker exits.
 
 ## Use
 
 Bind the `Worktree from Linear issue` action to a key (herdr `[[keys.command]]`,
 `type = "plugin_action"`, `command = "tdi.worktree-from-linear.pick"`), or invoke
 it from the action menu. It lists your team's active issues; pick one and herdr
-creates + focuses a worktree on the issue's branch. If a worktree for that branch
-already exists, it is opened instead.
+asks Plus to plan from that issue's identifier and title. A sole candidate is applied; multiple matching branches/checkouts show a second chooser. Cancelling either chooser creates nothing. The Linear-provided branch name is not a naming policy.
+
+Plus owns branch prefix, name limits, checkout root, remote default/base, existing branch reuse and native worktree creation/opening. Configure those in Plus, including any project base override; this plugin's former `base` option is obsolete. A missing backend, missing project policy or changed plan fails visibly without a fallback creation path. Refresh and select again after a changed-plan refusal.
+
+The action uses the original invoking pane and checkout, even if another client changes focus. Use `placement: "overlay"` or `"popup"` to preserve the surrounding layout while choosing. Noninteractive invocation requires explicit `HERDR_WFP_CWD`; the plugin's executable directory is never used as the target repository.
 
 ### The issue slot
 
@@ -195,7 +192,7 @@ anything. Everything else is reported and left alone:
   reading.
 
 In all of those the worktree is already open and its layout untouched; only the issue view
-is skipped, with a line saying why.
+is skipped, with a log line and bounded native notification saying why.
 
 Invoking the action again for the same issue focuses the host that already has it rather
 than restarting anything, and never sends it a second fetch. That only happens when the
@@ -212,7 +209,7 @@ those, checks them against the live foreground process, and sends one bounded re
 that socket. A request carries a known operation and a validated issue identifier —
 never a command, a script or an environment — and the host validates every field of it
 against itself before acting. It is local same-user IPC, not a network endpoint, and not a
-daemon: the host dies with its pane.
+daemon: the host dies with its pane. Socket paths must fit native metadata’s 80-byte bound; the host uses a short random directory and basename, and refuses an overlong custom runtime path with instructions to shorten `TMPDIR` or `XDG_RUNTIME_DIR`.
 
 Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr pane focus`
 is directional — so that goes over `HERDR_SOCKET_PATH`, the same socket herdr's own plugins
@@ -242,3 +239,7 @@ until you close the pane. It owns no slot and publishes nothing.
 ```bash
 npm test
 ```
+
+### Show an issue from a project action
+
+A project action can run `node <plugin-dir>/bin/show.js --workspace WORKSPACE_ID --issue IC-72` with this plugin's `HERDR_PLUGIN_CONFIG_DIR`. The explicit workspace must carry native checkout provenance. It uses the same configured host delivery and reports failure visibly; it does not create a pane or type a command into one.

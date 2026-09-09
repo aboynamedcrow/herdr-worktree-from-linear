@@ -1,10 +1,11 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../lib/run.js';
+import { plusFixture } from './support/plus-fixture.js';
 import { HOST_SCRIPT, checkoutDigest } from '../lib/hostwire.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
@@ -17,29 +18,28 @@ function keyDir(config = {}) {
   return dir;
 }
 
+const backend = plusFixture();
+after(() => backend.close());
 function fakeExec() {
   const calls = [];
-  const exec = (cmd, args = []) => {
+  const exec = (cmd, args = [], opts = {}) => {
     calls.push([cmd, ...args]);
     if (cmd === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: '/repo\n', stderr: '' };
-    if (cmd === 'git' && args.includes('symbolic-ref')) return { status: 0, stdout: 'origin/main\n', stderr: '' };
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\nbranch refs/heads/main\n', stderr: '' };
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 1, stdout: '', stderr: '' };
-    if (cmd === 'git' && args.includes('fetch')) return { status: 0, stdout: '', stderr: '' };
-    if (args[0] === 'worktree') return { status: 0, stdout: '{"type":"worktree_created"}', stderr: '' };
-    return { status: 0, stdout: '', stderr: '' };
+    return backend.reply(cmd, args, opts) || { status: 0, stdout: '', stderr: '' };
   };
   return { exec, calls };
 }
 
-test('run creates a worktree on the issue branch off origin/main', async () => {
+test('run delegates identifier and title to the shared policy and applies its choice', async () => {
   const dir = keyDir();
   const { exec, calls } = fakeExec();
   const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
   assert.equal(code, 0);
-  assert.ok(calls.some((c) => c.includes('fetch') && c.includes('main')));
-  assert.ok(calls.some((c) => c[0] === 'herdr' && c.includes('create') && c.includes('tdi/bit-1-do-it') && c.includes('--base') && c.includes('origin/main')));
+  const plan = calls.find((c) => c[1] === 'plan-worktree');
+  assert.deepEqual(plan.slice(2), ['--cwd', '/repo', '--name', 'Do it', '--issue', 'BIT-1']);
+  assert.ok(calls.some((c) => c[1] === 'apply-worktree' && c.includes(backend.plan.fingerprint)));
+  assert.equal(calls.some((c) => c.includes('fetch') || c.includes('create')), false);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -81,7 +81,7 @@ const WORKTREE_OUT = JSON.stringify({ result: {
   workspace: { workspace_id: WS, active_tab_id: TAB, label: 'BIT-1', number: 1, focused: true, pane_count: 2, tab_count: 1, agent_status: 'unknown' },
   tab: { tab_id: TAB, workspace_id: WS, label: 'Crew', number: 1, focused: true, pane_count: 2, agent_status: 'unknown' },
   root_pane: { pane_id: 'w9:p1', tab_id: TAB, workspace_id: WS, terminal_id: 't1', focused: true, agent_status: 'unknown', revision: 0, label: 'Orchestrator' },
-  worktree: { path: CHECKOUT, label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
+  worktree: { branch: 'ingwon/bit-1-do-it', path: CHECKOUT, label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
 } });
 const SLOT_CONFIG = { showIssueDetails: true, issueTabLabel: 'Crew', issuePaneLabel: 'Issue / Utility', issueSlotSettleMs: 200, issueSlotPollMs: 200 };
 
@@ -144,14 +144,8 @@ function slotExec({ worktreeExists = false, processInfo = HOST_FRONT, paneTokens
     calls.push([cmd, ...args]);
     options.push(opts);
     if (cmd === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: '/repo\n', stderr: '' };
-    if (cmd === 'git' && args.includes('symbolic-ref')) return { status: 0, stdout: 'origin/main\n', stderr: '' };
-    if (cmd === 'git' && args.includes('list')) {
-      const porcelain = worktreeExists ? 'worktree /wt\nbranch refs/heads/tdi/bit-1-do-it\n' : 'worktree /repo\nbranch refs/heads/main\n';
-      return { status: 0, stdout: porcelain, stderr: '' };
-    }
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 1, stdout: '', stderr: '' };
-    if (cmd === 'git' && args.includes('fetch')) return { status: 0, stdout: '', stderr: '' };
-    if (args[0] === 'worktree') return { status: 0, stdout: WORKTREE_OUT, stderr: '' };
+    const shared = backend.reply(cmd, args, opts, { checkout: worktreeExists, output: WORKTREE_OUT });
+    if (shared) return shared;
     if (args[0] === 'tab' && args[1] === 'list') {
       return { status: 0, stdout: JSON.stringify({ result: { type: 'tab_list', tabs: [{ tab_id: TAB, workspace_id: WS, label: 'Crew', number: 1, focused: true, pane_count: 2, agent_status: 'unknown' }] } }), stderr: '' };
     }
@@ -211,7 +205,7 @@ test('run hands the issue to the host in the configured slot of the new workspac
   assert.equal(logs.some((m) => /not delivered/.test(m)), false, logs.join(' | '));
   assertReadOnly(calls);
   // The workspace id comes from the worktree reply, never from whoever has focus.
-  for (const c of calls.filter((x) => x[2] === 'list')) assert.ok(c.includes(WS));
+  for (const c of calls.filter((x) => ['pane', 'tab'].includes(x[1]) && x[2] === 'list')) assert.ok(c.includes(WS));
   assert.equal(calls.some((c) => c[2] === 'current'), false);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -223,7 +217,7 @@ test('run also delivers when an existing worktree is re-opened', async (t) => {
   const host = await hostServer(t);
   const { exec, calls } = slotExec({ worktreeExists: true, paneTokens: hostTokens(host.socketPath) });
   assert.equal(await runWithSlot(dir, { exec }), 0);
-  assert.ok(calls.some((c) => c.includes('open')), 'precondition: this was the open path');
+  assert.ok(calls.some((c) => c.includes('apply-worktree')), 'shared policy applies the existing checkout');
   assert.equal(host.seen.length, 1, 'the issue was still delivered');
   rmSync(dir, { recursive: true, force: true });
 });
@@ -249,9 +243,7 @@ test('a slot with no host leaves the worktree alone and says how to start one', 
   assert.ok(logs.some((m) => /start it there with: node .*slot-host\.js --pane w9:p2/.test(m)), logs.join(' | '));
   assertReadOnly(calls);
   // Every herdr call delivery makes has a bound, the notification that reports the failure
-  // included: a server that accepts a command and never answers cannot hold the picker
-  // open. (`worktree create|open` is deliberately not bounded here — it is the action the
-  // user asked for, and it can legitimately take as long as a fetch and a checkout take.)
+  // included: a server that accepts a command and never answers cannot hold the picker open.
   for (const [i, call] of calls.entries()) {
     if (call[0] !== 'herdr' || !['pane', 'tab', 'notification'].includes(call[1])) continue;
     assert.equal(typeof options[i].timeout, 'number', `${call.join(' ')} was spawned with no timeout`);
@@ -339,4 +331,18 @@ test('run is a no-op when the user cancels', async () => {
   assert.equal(code, 0);
   assert.equal(calls.some((c) => c.includes('fetch')), false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+
+test('cancelling the shared candidate picker never applies or delivers', async () => {
+  const dir = keyDir(SLOT_CONFIG);
+  const { exec, calls } = fakeExec();
+  try {
+    assert.equal(await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => SAMPLE }),
+      select: async (list) => ({ ...list[0], branchName: undefined }), selectWorktree: async () => null, log: () => {},
+    }), 0);
+    assert.ok(calls.some((c) => c[1] === 'plan-worktree'));
+    assert.equal(calls.some((c) => c[1] === 'apply-worktree' || c[1] === 'pane' || c[1] === 'tab'), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

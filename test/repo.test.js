@@ -24,5 +24,18 @@ test('resolveRepo prefers HERDR_WFP_CWD over context JSON', () => {
 
 test('resolveRepo throws when not a git repo', () => {
   const exec = () => ({ status: 1, stdout: '', stderr: 'fatal' });
-  assert.throws(() => resolveRepo({}, exec), /not inside a git repository/);
+  assert.throws(() => resolveRepo({ HERDR_WFP_CWD: '/repo' }, exec), /not inside a git repository/);
+});
+
+
+test('repository resolution refuses implicit cwd and strips ambient Git selection', () => {
+  assert.throws(() => resolveRepo({ PWD: '/wrong' }, () => assert.fail('no command')), /explicit invoking/);
+  resolveRepo({ HERDR_WFP_CWD: '/repo', GIT_DIR: '/wrong/.git', GIT_WORK_TREE: '/wrong', GIT_CONFIG_COUNT: '0', SSH_AUTH_SOCK: '/transport' }, (_cmd, _args, opts) => {
+    assert.equal(opts.env.GIT_DIR, undefined);
+    assert.equal(opts.env.GIT_WORK_TREE, undefined);
+    assert.equal(opts.env.GIT_CONFIG_COUNT, '0');
+    assert.equal(opts.env.SSH_AUTH_SOCK, '/transport');
+    assert.ok(opts.timeout > 0);
+    return { status: 0, stdout: '/repo\n' };
+  });
 });
