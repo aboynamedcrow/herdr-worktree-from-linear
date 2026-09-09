@@ -16,7 +16,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
 
 - **`fzf`** — the fuzzy picker (`brew install fzf`). Required for the intended
   overlay; without it a plain numbered prompt is used.
-- **`glow`** — optional (`brew install glow`); renders the issue pane's markdown.
+- **`glow`** — optional (`brew install glow`); renders the issue view's markdown.
   Without it the pane prints the same plain-text panel as before.
 - **A Linear personal API key for each workspace** — Linear → Settings →
   Security & access → API → create a personal key. Export each key under an
@@ -89,12 +89,17 @@ herdr plugin install tdi/herdr-worktree-from-linear
   Default `false`, and it needs `issueTabLabel` and `issuePaneLabel`.
 - `issueTabLabel` / `issuePaneLabel` — the tab label, and the pane label inside
   that tab, that name the slot the issue view is delivered to. There is no
-  default for either: the plugin will not guess which of your panes to type
-  into. Both must match your layout exactly, and both must be unique — a
-  renamed or duplicated label is reported rather than resolved.
+  default for either: the plugin will not guess which of your panes it is. Both
+  must match your layout exactly, and both must be unique — a renamed or
+  duplicated label is reported rather than resolved.
 - `issueSlotSettleMs` / `issueSlotPollMs` — how long to wait for a layout that
   is still being applied, and how often to look. Defaults `5000` and `200`
-  milliseconds. The wait is always finite.
+  milliseconds. The wait is always finite, and each `herdr` command it runs is
+  given what is left of it as its own timeout.
+- `issueSlotCommandMs` — the bound on every `herdr` command run after the layout
+  has settled, and on the socket call that focuses the slot. Default `5000`
+  milliseconds. A herdr that accepts a command and never answers cannot hold the
+  picker open.
 - `popupWidth` / `popupHeight` — size of the `popup` placement, as a percentage
   (`"80%"`) or a terminal-cell count (`120`). Only used when `placement` is
   `popup`. Defaults `80%` × `70%`.
@@ -149,52 +154,88 @@ already exists, it is opened instead.
 
 ### The issue slot
 
-With `showIssueDetails: true`, opening a worktree — freshly created or re-opened —
-also shows the picked issue in a pane your own layout already provides: the pane
-labeled `issuePaneLabel` in the tab labeled `issueTabLabel`, inside the workspace
-herdr just reported. It shows the identifier, title, state, assignee, priority,
-estimate, project, cycle, labels, the description, and the comment threads
-oldest-first, fetched from Linear with your key and rendered by the plugin — no
-extra CLI needed.
+With `showIssueDetails: true`, opening a worktree — freshly created or re-opened — also
+shows the picked issue in a pane your own layout already provides: the pane labeled
+`issuePaneLabel` in the tab labeled `issueTabLabel`, inside the workspace herdr just
+reported. It shows the identifier, title, state, assignee, priority, estimate, project,
+cycle, labels, the description, and the comment threads oldest-first, fetched from Linear
+with your key and rendered by the plugin — no extra CLI needed.
 
-Delivery never changes your layout. It does not split, swap, move, resize or
-close anything; it types one command into a slot that is already sitting at an
-idle shell prompt — the shell process itself in the foreground, with no job
-running under it. The viewer starts with an absolute node, script, config
-directory and checkout path, and with `NODE_OPTIONS` cleared, so neither the
-slot's `PATH` nor its environment can change which viewer runs or what it loads.
-Everything else is reported and left alone:
+**You start the viewer yourself.** In the pane you picked, run:
 
+```bash
+node <plugin-dir>/bin/slot-host.js --pane "$HERDR_PANE_ID" \
+  --config-dir "$(herdr plugin config-dir tdi.worktree-from-linear)"
+```
+
+(`--cwd` defaults to the pane's working directory and must be the worktree the issue
+belongs to. `herdr plugin dir tdi.worktree-from-linear` gives you `<plugin-dir>`.) That
+process — the *issue host* — owns the pane while it runs, and picking an issue makes it
+show that issue. `q` or `Ctrl-C` quits it and gives the pane back to your shell. Your
+layout can start it for you as the pane's startup command.
+
+Why it works this way, rather than the plugin typing a command into your shell: a shell
+cannot be asked whether it is at a prompt. A shell sitting inside its own `read` builtin
+has the same pid, the same process group and the same name as an idle one, so anything
+"helpfully" typed there would be answering somebody's prompt — silently, and at exactly
+the wrong moment. This plugin therefore never writes to a terminal at all. There is no
+command construction, no shell quoting and no `pane run` anywhere in it.
+
+Delivery also never changes your layout. It does not split, swap, move, resize or close
+anything. Everything else is reported and left alone:
+
+- The pane is not running an issue host — a shell, an agent, an editor, a command,
+  anything else. The message tells you the exact command to start one there.
+- The host that is running belongs to another checkout, or published incomplete identity.
 - The tab or pane label is missing, renamed, or matches more than one tab or pane.
 - The layout has not finished being applied within `issueSlotSettleMs`.
-- herdr could not be asked, or answered something unreadable.
-- The slot is busy: an agent, an editor, a command — anything that is not the
-  slot's own shell sitting at its prompt.
+- herdr could not be asked, answered something unreadable, or did not answer within
+  `issueSlotCommandMs`.
+- The host already has a different issue on screen: it says so and keeps what you are
+  reading.
 
-In all of those the worktree is already open and its layout untouched; only the
-issue view is skipped, with a line saying why.
+In all of those the worktree is already open and its layout untouched; only the issue view
+is skipped, with a line saying why.
 
-Invoking the action again for the same issue focuses the viewer that is already
-there rather than restarting it, and never sends it input. That only happens when
-the pane's live foreground process and the metadata it published agree on both
-the issue and the invocation that started it — leftover metadata from a viewer
-that has since exited proves nothing on its own. A viewer showing a different
-issue counts as busy. `q` or `Ctrl-C` closes the viewer and hands the shell back.
+Invoking the action again for the same issue focuses the host that already has it rather
+than restarting anything, and never sends it a second fetch. That only happens when the
+pane's live foreground process is the host, the metadata it published names that same live
+process, and the host itself confirms the issue over its socket — leftover metadata from a
+host that has since exited proves nothing on its own.
 
-Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr
-pane focus` is directional — so it goes over `HERDR_SOCKET_PATH`, the same socket
-herdr's own plugins use, as a single bounded request with a deadline. Nothing is
-kept open and nothing is subscribed to.
+#### How the picker reaches the host
 
-If Linear cannot be reached, the viewer prints why and returns the shell it was
-typed into, exiting non-zero like any other failed command — the worktree and the
-layout that got you there are already correct, so nothing is rolled back and the
-slot is not left parked on an error. (The older `[[panes]]` entrypoint has no
-shell to return to, so there the message stays on screen until you close it.)
+The host creates a unix socket in a directory it makes for itself (mode `0700`, socket
+mode `0600`, both removed on the way out) and publishes the path, its pid, a random
+instance token and a digest of its checkout as metadata on its own pane. The picker reads
+those, checks them against the live foreground process, and sends one bounded request over
+that socket. A request carries a known operation and a validated issue identifier —
+never a command, a script or an environment — and the host validates every field of it
+against itself before acting. It is local same-user IPC, not a network endpoint, and not a
+daemon: the host dies with its pane.
 
-With `glow` installed the description and comments are rendered as markdown at
-the pane's width, and a resize re-renders to fit. Without it — or when the pane's
-output is not a terminal — the same content prints as plain text.
+Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr pane focus`
+is directional — so that goes over `HERDR_SOCKET_PATH`, the same socket herdr's own plugins
+use, as a single bounded request with a deadline. Nothing is kept open and nothing is
+subscribed to.
+
+If Linear cannot be reached, the host prints why, exits non-zero and gives the pane back to
+your shell — the worktree and the layout that got you there are already correct, so nothing
+is rolled back. Starting the host again is up to you; the plugin will not restart it,
+because that would mean typing into the shell it just handed back.
+
+With `glow` installed the description and comments are rendered as markdown at the pane's
+width, and a resize re-renders to fit. Without it — or when the pane's output is not a
+terminal — the same content prints as plain text. Rendering is bounded like everything
+else: a renderer that has not finished within five seconds is signalled, the plain panel is
+printed instead, and the pane goes back to reading `q`. No renderer outlives the pane's own
+process.
+
+### The `[[panes]]` issue pane
+
+The older entrypoint (`bin/issue.js`, herdr pane id `issue`) still works: herdr opens a
+pane, passes the identifier as `HERDR_WFP_ISSUE`, and it renders the same view and holds
+until you close the pane. It owns no slot and publishes nothing.
 
 ## Develop
 

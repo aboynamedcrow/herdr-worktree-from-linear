@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../lib/run.js';
-import { VIEWER_SCRIPT } from '../lib/slot.js';
+import { HOST_SCRIPT, checkoutDigest } from '../lib/hostwire.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-1', title: 'Do it', branchName: 'tdi/bit-1-do-it', url: 'u', state: { name: 'Todo' }, assignee: { displayName: 'D' }, team: { key: 'BIT' } },
@@ -74,22 +74,75 @@ test('run selects the Linear API key using the resolved repo root', async () => 
 const WS = 'w9';
 const TAB = 'w9:t1';
 const SLOT = 'w9:p2';
+const CHECKOUT = '/wt/bit-1';
+const INSTANCE = 'instance-token-0';
 const WORKTREE_OUT = JSON.stringify({ result: {
   type: 'worktree_created',
   workspace: { workspace_id: WS, active_tab_id: TAB, label: 'BIT-1', number: 1, focused: true, pane_count: 2, tab_count: 1, agent_status: 'unknown' },
   tab: { tab_id: TAB, workspace_id: WS, label: 'Crew', number: 1, focused: true, pane_count: 2, agent_status: 'unknown' },
   root_pane: { pane_id: 'w9:p1', tab_id: TAB, workspace_id: WS, terminal_id: 't1', focused: true, agent_status: 'unknown', revision: 0, label: 'Orchestrator' },
-  worktree: { path: '/wt/bit-1', label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
+  worktree: { path: CHECKOUT, label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
 } });
 const SLOT_CONFIG = { showIssueDetails: true, issueTabLabel: 'Crew', issuePaneLabel: 'Issue / Utility', issueSlotSettleMs: 200, issueSlotPollMs: 200 };
-const IDLE_SHELL = { pane_id: SLOT, shell_pid: 42, foreground_process_group_id: 42, foreground_processes: [{ pid: 42, name: 'zsh', argv0: 'zsh', argv: ['-zsh'] }] };
-const BUSY_SHELL = { pane_id: SLOT, shell_pid: 42, foreground_process_group_id: 77, foreground_processes: [{ pid: 77, name: 'cat', argv0: 'cat', argv: ['cat'] }] };
+
+// A pane whose foreground process is an issue host. The pid is this test process: it is a
+// live node process, which is what the driver requires before it will talk to anything.
+const HOST_FRONT = {
+  pane_id: SLOT,
+  shell_pid: 42,
+  foreground_process_group_id: process.pid,
+  foreground_processes: [{
+    pid: process.pid,
+    name: 'node',
+    argv0: 'node',
+    argv: [process.execPath, HOST_SCRIPT, '--pane', SLOT, '--config-dir', '/cfg', '--cwd', CHECKOUT],
+  }],
+};
+// A slot with no host in it: a shell at what looks like an idle prompt.
+const SHELL_FRONT = { pane_id: SLOT, shell_pid: 42, foreground_process_group_id: 42, foreground_processes: [{ pid: 42, name: 'zsh', argv0: 'zsh', argv: ['-zsh'] }] };
+
+const hostTokens = (socketPath) => ({
+  'wfl-host-pid': String(process.pid),
+  'wfl-host-id': INSTANCE,
+  'wfl-host-sock': socketPath,
+  'wfl-host-cwd': checkoutDigest(CHECKOUT),
+});
+
+// A real unix socket speaking the host protocol, so run() reaches it the way it would
+// reach a host: over lib/hostwire.js, with no injection.
+async function hostServer(t, status = 'accepted') {
+  const dir = mkdtempSync(join(tmpdir(), 'wfl-run-host-'));
+  const socketPath = join(dir, 'h.sock');
+  const seen = [];
+  const server = createServer((conn) => {
+    let buffer = '';
+    conn.setEncoding('utf8');
+    conn.on('error', () => {});
+    conn.on('data', (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      const request = JSON.parse(buffer.slice(0, newline));
+      seen.push(request);
+      conn.end(`${JSON.stringify({
+        protocol: 'wfl-host-1', id: request.id, ok: true, status,
+        pane: request.pane, host: request.host, pid: request.pid, checkout: request.checkout,
+        issue: request.issue, detail: status,
+      })}\n`);
+    });
+  });
+  await new Promise((resolve) => server.listen(socketPath, resolve));
+  t.after(() => { server.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { socketPath, seen };
+}
 
 // git answers plus a herdr that owns a laid-out Crew tab with one Issue / Utility slot.
-function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL, paneTokens = {} } = {}) {
+function slotExec({ worktreeExists = false, processInfo = HOST_FRONT, paneTokens = {} } = {}) {
   const calls = [];
-  const exec = (cmd, args = []) => {
+  const options = [];
+  const exec = (cmd, args = [], opts = {}) => {
     calls.push([cmd, ...args]);
+    options.push(opts);
     if (cmd === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: '/repo\n', stderr: '' };
     if (cmd === 'git' && args.includes('symbolic-ref')) return { status: 0, stdout: 'origin/main\n', stderr: '' };
     if (cmd === 'git' && args.includes('list')) {
@@ -119,10 +172,16 @@ function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL, paneTokens
     }
     return { status: 0, stdout: '', stderr: '' };
   };
-  return { exec, calls };
+  return { exec, calls, options };
 }
 
-const paneRunOf = (calls) => calls.find((c) => c[1] === 'pane' && c[2] === 'run');
+// Nothing this plugin runs may write to a terminal or rearrange a layout.
+const FORBIDDEN = ['run', 'send-input', 'send-keys', 'paste', 'split', 'swap', 'move', 'resize', 'zoom', 'close'];
+function assertReadOnly(calls) {
+  for (const c of calls) {
+    for (const verb of FORBIDDEN) assert.equal(c.includes(verb), false, `must not run: ${c.join(' ')}`);
+  }
+}
 
 async function runWithSlot(dir, { exec, select = async (list) => list[0], log = () => {}, socketPath } = {}) {
   return run({
@@ -137,15 +196,20 @@ async function runWithSlot(dir, { exec, select = async (list) => list[0], log = 
   });
 }
 
-test('run delivers the issue viewer into the configured slot of the new workspace', async () => {
+test('run hands the issue to the host in the configured slot of the new workspace', async (t) => {
   const dir = keyDir(SLOT_CONFIG);
-  const { exec, calls } = slotExec();
-  assert.equal(await runWithSlot(dir, { exec }), 0);
-  const sent = paneRunOf(calls);
-  assert.ok(sent, 'the viewer command was typed into the slot');
-  assert.equal(sent[3], SLOT);
-  assert.match(sent[4], /'--issue' 'BIT-1'/);
-  assert.match(sent[4], /bin\/issue\.js/);
+  const host = await hostServer(t);
+  const { exec, calls } = slotExec({ paneTokens: hostTokens(host.socketPath) });
+  const logs = [];
+  assert.equal(await runWithSlot(dir, { exec, log: (m) => logs.push(m) }), 0);
+  // The host was asked, over its own socket, for exactly the issue that was picked.
+  assert.equal(host.seen.length, 1, JSON.stringify(logs));
+  assert.equal(host.seen[0].op, 'show');
+  assert.equal(host.seen[0].issue, 'BIT-1');
+  assert.equal(host.seen[0].pane, SLOT);
+  assert.equal(host.seen[0].checkout, CHECKOUT);
+  assert.equal(logs.some((m) => /not delivered/.test(m)), false, logs.join(' | '));
+  assertReadOnly(calls);
   // The workspace id comes from the worktree reply, never from whoever has focus.
   for (const c of calls.filter((x) => x[2] === 'list')) assert.ok(c.includes(WS));
   assert.equal(calls.some((c) => c[2] === 'current'), false);
@@ -154,37 +218,45 @@ test('run delivers the issue viewer into the configured slot of the new workspac
 
 // The old behavior skipped re-opens because it added a pane every time. Delivery targets
 // a slot that is already there, so a re-open is exactly as valid as a fresh create.
-test('run also delivers when an existing worktree is re-opened', async () => {
+test('run also delivers when an existing worktree is re-opened', async (t) => {
   const dir = keyDir(SLOT_CONFIG);
-  const { exec, calls } = slotExec({ worktreeExists: true });
+  const host = await hostServer(t);
+  const { exec, calls } = slotExec({ worktreeExists: true, paneTokens: hostTokens(host.socketPath) });
   assert.equal(await runWithSlot(dir, { exec }), 0);
   assert.ok(calls.some((c) => c.includes('open')), 'precondition: this was the open path');
-  assert.ok(paneRunOf(calls), 'the viewer command was still delivered');
+  assert.equal(host.seen.length, 1, 'the issue was still delivered');
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('run never splits, swaps, moves or resizes a pane to show the issue', async () => {
+test('run never splits, swaps, moves, resizes or types to show the issue', async (t) => {
   const dir = keyDir(SLOT_CONFIG);
-  const { exec, calls } = slotExec();
+  const host = await hostServer(t);
+  const { exec, calls } = slotExec({ paneTokens: hostTokens(host.socketPath) });
   assert.equal(await runWithSlot(dir, { exec }), 0);
-  for (const c of calls) {
-    for (const verb of ['split', 'swap', 'move', 'resize', 'zoom', 'close']) {
-      assert.equal(c.includes(verb), false, `must not run: ${c.join(' ')}`);
-    }
-  }
+  assertReadOnly(calls);
   assert.equal(calls.some((c) => c[1] === 'plugin' && c[2] === 'pane'), false, 'no plugin pane is opened');
   rmSync(dir, { recursive: true, force: true });
 });
 
-// The worktree and its layout are already right; only the viewer failed to start.
-test('a busy slot leaves the worktree alone and reports why nothing was delivered', async () => {
+// The worktree and its layout are already right; only the issue view is skipped.
+test('a slot with no host leaves the worktree alone and says how to start one', async () => {
   const dir = keyDir(SLOT_CONFIG);
-  const { exec, calls } = slotExec({ processInfo: BUSY_SHELL });
+  const { exec, calls, options } = slotExec({ processInfo: SHELL_FRONT });
   const logs = [];
   assert.equal(await runWithSlot(dir, { exec, log: (m) => logs.push(m) }), 0);
   assert.ok(logs.some((m) => /created worktree for BIT-1/.test(m)), 'the worktree still succeeded');
-  assert.ok(logs.some((m) => /issue details not delivered .*cat is running/.test(m)), 'and said why');
-  assert.equal(paneRunOf(calls), undefined);
+  assert.ok(logs.some((m) => /not running the issue host/.test(m)), 'and said why');
+  assert.ok(logs.some((m) => /start it there with: node .*slot-host\.js --pane w9:p2/.test(m)), logs.join(' | '));
+  assertReadOnly(calls);
+  // Every herdr call delivery makes has a bound, the notification that reports the failure
+  // included: a server that accepts a command and never answers cannot hold the picker
+  // open. (`worktree create|open` is deliberately not bounded here — it is the action the
+  // user asked for, and it can legitimately take as long as a fetch and a checkout take.)
+  for (const [i, call] of calls.entries()) {
+    if (call[0] !== 'herdr' || !['pane', 'tab', 'notification'].includes(call[1])) continue;
+    assert.equal(typeof options[i].timeout, 'number', `${call.join(' ')} was spawned with no timeout`);
+  }
+  assert.ok(calls.some((c) => c[1] === 'notification'), 'the failure was notified');
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -208,8 +280,9 @@ test('run does NOT touch the slot unless showIssueDetails is set', async () => {
 
 // run() has to hand the socket herdr injected down to delivery: focusing an exact pane
 // has no CLI, so without it a repeat delivery could not focus anything.
-test('a repeat delivery focuses the live viewer over the socket herdr injected', async (t) => {
+test('a repeat delivery focuses the live host over the socket herdr injected', async (t) => {
   const dir = keyDir(SLOT_CONFIG);
+  const host = await hostServer(t, 'showing');
   const seen = [];
   const socketDir = mkdtempSync(join(tmpdir(), 'wfl-run-sock-'));
   const socketPath = join(socketDir, 's');
@@ -229,22 +302,12 @@ test('a repeat delivery focuses the live viewer over the socket herdr injected',
   t.after(() => { server.close(); rmSync(socketDir, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); });
   await new Promise((resolve) => server.listen(socketPath, resolve));
 
-  const viewer = {
-    pane_id: SLOT,
-    shell_pid: 42,
-    foreground_process_group_id: 900,
-    foreground_processes: [{
-      pid: 900,
-      name: 'node',
-      argv0: 'node',
-      argv: [process.execPath, VIEWER_SCRIPT, '--issue', 'BIT-1', '--invocation', 'inv7', '--config-dir', dir, '--cwd', '/wt/bit-1', '--pane', SLOT],
-    }],
-  };
-  const { exec, calls } = slotExec({ processInfo: viewer, paneTokens: { 'wfl-issue': 'BIT-1', 'wfl-invocation': 'inv7' } });
+  const { exec, calls } = slotExec({ paneTokens: hostTokens(host.socketPath) });
   const logs = [];
   assert.equal(await runWithSlot(dir, { exec, log: (m) => logs.push(m), socketPath }), 0);
   assert.deepEqual(seen.map((r) => [r.method, r.params.pane_id]), [['pane.focus', SLOT]]);
-  assert.equal(paneRunOf(calls), undefined, 'the live viewer was sent no input');
+  assert.equal(host.seen.length, 1, 'the host confirmed it before anything focused');
+  assertReadOnly(calls);
   assert.equal(logs.some((m) => /not delivered/.test(m)), false, logs.join(' | '));
 });
 
