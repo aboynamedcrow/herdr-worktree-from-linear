@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   classifyForeground, deliverIssueDetails, readWorktreeWorkspace, selectSlot, slotSettings,
 } from '../lib/slot.js';
@@ -44,6 +47,22 @@ const hostFront = (over = {}, procOver = {}) => ({
   foreground_process_group_id: HOST_PID,
   foreground_processes: [{ pid: HOST_PID, name: 'node', argv0: 'node', argv: hostArgv(), cwd: CHECKOUT, ...procOver }],
   ...over,
+});
+
+test('foreground identity accepts a linked host script and refuses a different script', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'wfl-script-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const linked = join(dir, 'host.js');
+  symlinkSync(HOST_SCRIPT, linked);
+  const classify = (script) => classifyForeground(hostFront({}, {
+    argv: [process.execPath, script, '--pane', SLOT],
+  }), SLOT);
+  assert.equal(classify(linked).kind, 'host');
+  const other = join(dir, 'other.js');
+  writeFileSync(other, '// a different program');
+  assert.equal(classify(other).kind, 'busy');
+  assert.equal(classify(join(dir, 'missing.js')).kind, 'busy');
+  assert.equal(classify('bin/slot-host.js').kind, 'busy');
 });
 
 // An idle-looking login shell. This is the shape that used to be treated as "safe to type
