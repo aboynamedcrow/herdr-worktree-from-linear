@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../lib/config.js';
 import { fetchIssue } from '../lib/linear.js';
 import { formatIssue, formatIssueMarkdown } from '../lib/render.js';
+import { viewerMetadataArgs, viewerMetadataClearArgs } from '../lib/slot.js';
 
 const RESIZE_DEBOUNCE_MS = 200;
 // Home, erase screen, erase scrollback: without the last one every re-render would stack
@@ -88,15 +89,65 @@ export function renderWithGlow(markdown, fallback) {
   return true;
 }
 
-// Runs as a herdr plugin pane (see [[panes]] "issue"), so HERDR_PLUGIN_CONFIG_DIR is set.
-// The issue identifier is passed in via --env HERDR_WFP_ISSUE when the pane is opened.
+// Two ways in, and the difference is who chose the arguments.
+//
+//   * As a herdr plugin pane (see [[panes]] "issue"): herdr sets HERDR_PLUGIN_CONFIG_DIR
+//     and the identifier arrives as --env HERDR_WFP_ISSUE.
+//   * Typed into an existing shell by lib/slot.js: nothing is inherited, so every input
+//     is an explicit flag — absolute config dir, absolute cwd, the issue, the pane to
+//     publish identity on, and the invocation token that makes this run distinguishable
+//     from the last one.
+//
+// Flags win where both are present; the env form stays supported so an existing
+// [[panes]] entrypoint keeps working.
+export function parseViewerArgs(argv = [], env = {}) {
+  const flag = (name) => {
+    const i = argv.indexOf(name);
+    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
+  };
+  return {
+    identifier: (flag('--issue') || env.HERDR_WFP_ISSUE || '').trim().toUpperCase(),
+    configDir: flag('--config-dir') || env.HERDR_PLUGIN_CONFIG_DIR || undefined,
+    // loadConfig treats this as the repository root for path-based key selection. An
+    // explicit value keeps that decision off whatever cwd the shell happened to be in.
+    cwd: flag('--cwd') || undefined,
+    // Deliberately no environment fallback: publishing identity is only correct for a
+    // pane the sender named, and an inherited HERDR_PANE_ID would make an ordinary
+    // `node bin/issue.js` write metadata onto someone else's pane.
+    paneId: flag('--pane') || null,
+    invocation: flag('--invocation') || null,
+  };
+}
+
+// Publish "this pane is showing this issue, started by this invocation" so a repeat
+// delivery can recognize the viewer without sending it any input, and clear it on the way
+// out. Both directions are best effort: herdr may be an older build, the pane may already
+// be gone, and neither failure says anything about whether this process is alive.
+function publishIdentity({ paneId, identifier, invocation }) {
+  if (!paneId || !invocation || !identifier) return;
+  const herdr = process.env.HERDR_BIN_PATH || 'herdr';
+  const report = (args) => {
+    try {
+      spawnSync(herdr, args, { encoding: 'utf8', stdio: 'ignore' });
+    } catch {
+      // An unreachable herdr must not take the issue view down with it.
+    }
+  };
+  report(viewerMetadataArgs(paneId, identifier, invocation));
+  process.on('exit', () => report(viewerMetadataClearArgs(paneId)));
+}
+
 async function main() {
-  const identifier = (process.env.HERDR_WFP_ISSUE || '').trim().toUpperCase();
+  const args = parseViewerArgs(process.argv.slice(2), process.env);
+  const { identifier } = args;
+  publishIdentity(args);
   let issue;
   try {
-    const config = loadConfig(process.env.HERDR_PLUGIN_CONFIG_DIR, undefined, process.env, identifier);
+    const config = loadConfig(args.configDir, args.cwd, process.env, identifier);
     issue = await fetchIssue(config, identifier);
   } catch (err) {
+    // A failed fetch is rendered, not thrown: the worktree and the layout that got us
+    // here are already correct, and the pane must say why rather than vanish.
     issue = { identifier, error: err.message };
   }
   const plain = formatIssue(issue);
