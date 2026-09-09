@@ -1,15 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildViewerCommand, classifyForeground, deliverIssueDetails, readWorktreeWorkspace,
-  selectSlot, shellQuote, slotSettings, viewerMetadataArgs, viewerMetadataClearArgs,
-  ISSUE_TOKEN, INVOCATION_TOKEN, VIEWER_SCRIPT,
+  classifyForeground, deliverIssueDetails, readWorktreeWorkspace, selectSlot, slotSettings,
 } from '../lib/slot.js';
+import { HOST_SCRIPT, checkoutDigest } from '../lib/hostwire.js';
 
 const WS = 'w9';
 const TAB = 'w9:t1';
 const SLOT = 'w9:p2';
-const CONFIG = { issueTabLabel: 'Crew', issuePaneLabel: 'Issue / Utility', issueSlotSettleMs: 1000, issueSlotPollMs: 200 };
+const CHECKOUT = '/wt/bit-1';
+const CONFIG = {
+  issueTabLabel: 'Crew', issuePaneLabel: 'Issue / Utility',
+  issueSlotSettleMs: 1000, issueSlotPollMs: 200, issueSlotCommandMs: 400,
+};
 
 // Reply shapes copied from herdr 0.9.0 captures: `result` wraps a typed payload, and the
 // CLI prints it as JSON with no --json flag.
@@ -21,42 +24,46 @@ const paneReply = (p) => JSON.stringify({ id: 'cli:pane:get', result: { type: 'p
 const tab = (over = {}) => ({ tab_id: TAB, workspace_id: WS, number: 1, label: 'Crew', focused: true, pane_count: 4, agent_status: 'unknown', ...over });
 const pane = (over = {}) => ({ pane_id: SLOT, tab_id: TAB, workspace_id: WS, terminal_id: 't', focused: false, agent_status: 'unknown', revision: 0, label: 'Issue / Utility', ...over });
 
-// An idle login shell: one foreground process, and it is the shell process itself.
+// The tokens a live host publishes on its own pane.
+const HOST_PID = 30001;
+const HOST_ID = 'instance-token-0';
+const HOST_SOCK = '/tmp/wfl-host-abc/def.sock';
+const hostTokens = (over = {}) => ({
+  'wfl-host-pid': String(HOST_PID),
+  'wfl-host-id': HOST_ID,
+  'wfl-host-sock': HOST_SOCK,
+  'wfl-host-cwd': checkoutDigest(CHECKOUT),
+  ...over,
+});
+
+// What herdr reports for a pane whose foreground process is the issue host.
+const hostArgv = (paneId = SLOT) => [process.execPath, HOST_SCRIPT, '--pane', paneId, '--config-dir', '/cfg', '--cwd', CHECKOUT];
+const hostFront = (over = {}, procOver = {}) => ({
+  pane_id: SLOT,
+  shell_pid: 22278,
+  foreground_process_group_id: HOST_PID,
+  foreground_processes: [{ pid: HOST_PID, name: 'node', argv0: 'node', argv: hostArgv(), cwd: CHECKOUT, ...procOver }],
+  ...over,
+});
+
+// An idle-looking login shell. This is the shape that used to be treated as "safe to type
+// into" — and the shape a shell blocked in its own `read` builtin has too.
 const idleShell = (over = {}) => ({
   pane_id: SLOT,
   shell_pid: 22278,
   foreground_process_group_id: 22278,
-  foreground_processes: [{ pid: 22278, name: 'zsh', argv0: 'zsh', argv: ['-zsh'], cwd: '/wt/bit-1' }],
+  foreground_processes: [{ pid: 22278, name: 'zsh', argv0: 'zsh', argv: ['-zsh'], cwd: CHECKOUT }],
   ...over,
 });
 
-// A job in the foreground: the process group is no longer the shell's.
-const busyShell = () => ({
+// A shell that is not at a prompt at all: it is sitting in `read` inside a script. From
+// the outside it is indistinguishable from the one above — same pid, same group, same
+// name — which is exactly why neither of them is ever delivered into.
+const readingShell = () => ({
   pane_id: SLOT,
   shell_pid: 87005,
-  foreground_process_group_id: 87212,
-  foreground_processes: [{ pid: 87212, name: 'cat', argv0: 'cat', argv: ['cat'], cwd: '/wt/bit-1' }],
-});
-
-// `env -u NODE_OPTIONS` execs node in place, so what herdr sees in the foreground is the
-// node process itself, with the script at argv[1].
-const viewerArgv = (issue, invocation, paneId = SLOT) => [
-  process.execPath, VIEWER_SCRIPT,
-  '--issue', issue, '--invocation', invocation,
-  '--config-dir', '/cfg', '--cwd', '/wt/bit-1', '--pane', paneId,
-];
-
-const viewerFor = (issue, invocation, over = {}) => ({
-  pane_id: SLOT,
-  shell_pid: 22278,
-  foreground_process_group_id: 30001,
-  foreground_processes: [{
-    pid: 30001,
-    name: 'node',
-    argv0: 'node',
-    argv: viewerArgv(issue, invocation),
-    ...over,
-  }],
+  foreground_process_group_id: 87005,
+  foreground_processes: [{ pid: 87005, name: 'bash', argv0: 'bash', argv: ['bash', '--norc', '-c', 'read -r answer'], cwd: CHECKOUT }],
 });
 
 const worktreeStdout = (over = {}) => JSON.stringify({
@@ -66,18 +73,22 @@ const worktreeStdout = (over = {}) => JSON.stringify({
     workspace: { workspace_id: WS, number: 8, label: 'BIT-1', focused: true, pane_count: 4, tab_count: 1, active_tab_id: TAB, agent_status: 'unknown' },
     tab: tab(),
     root_pane: pane({ pane_id: 'w9:p1', label: 'Orchestrator' }),
-    worktree: { path: '/wt/bit-1', label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
+    worktree: { path: CHECKOUT, label: 'bit-1', is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
     ...over,
   },
 });
 
 // Dispatches on the first two CLI words ("pane list", "pane process-info", ...). A handler
 // is a JSON string, a { status, stdout, stderr } triple, or a function of the call index.
+// Every call's options are kept too: the deadline a caller owns is only real if it reaches
+// the subprocess.
 function fakeHerdr(handlers) {
   const calls = [];
+  const options = [];
   const seen = new Map();
-  const exec = (cmd, args = []) => {
+  const exec = (cmd, args = [], opts = {}) => {
     calls.push([cmd, ...args]);
+    options.push(opts);
     const key = `${args[0]} ${args[1]}`;
     const nth = seen.get(key) ?? 0;
     seen.set(key, nth + 1);
@@ -87,7 +98,7 @@ function fakeHerdr(handlers) {
     if (typeof out === 'string') return { status: 0, stdout: out, stderr: '' };
     return { status: out.status ?? 0, stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
   };
-  return { exec, calls };
+  return { exec, calls, options };
 }
 
 // A clock that steps by one poll each read, so the settle deadline is reached without any
@@ -97,454 +108,428 @@ function clock(step = 200) {
   return () => { const v = t; t += step; return v; };
 }
 
+let focused = [];
+let asked = [];
+
 const deliver = (over = {}) => deliverIssueDetails({
   worktreeStdout: worktreeStdout(),
   identifier: 'BIT-1',
   config: CONFIG,
   configDir: '/cfg',
-  socketPath: '/tmp/wfl-fake.sock',
+  socketPath: '/tmp/herdr-fake.sock',
   herdrBin: 'herdr',
   sleep: async () => {},
   now: clock(),
-  invocation: () => 'inv0',
+  nonce: () => 'nonce0',
   focus: async (paneId) => { focused.push(paneId); return { ok: true, pane: { pane_id: paneId } }; },
+  // The real client is exercised against a real socket in test/host.test.js and against a
+  // real host process in test/slot-host.test.js; here it is injected so the driver's own
+  // decisions are what is under test.
+  ask: async (socketPath, request, expected) => {
+    asked.push({ socketPath, request, expected });
+    return { ok: true, status: 'accepted', issue: request.issue, detail: 'starting' };
+  },
   ...over,
 });
-
-// Focus has no CLI, so it is a socket call; the driver takes it as an injected function
-// and lib/native.js owns the transport (covered against a real socket in native.test.js).
-let focused = [];
 
 const happy = () => ({
   'tab list': tabsReply([tab()]),
   'pane list': panesReply([pane({ pane_id: 'w9:p1', label: 'Orchestrator' }), pane()]),
-  'pane process-info': processReply(idleShell()),
-  'pane run': { status: 0, stdout: '', stderr: '' },
+  'pane process-info': processReply(hostFront()),
+  'pane get': paneReply(pane({ tokens: hostTokens() })),
 });
 
 // Layout is created out of band, so anything that opens, moves, resizes or closes a pane
-// would be this plugin rearranging a layout it did not build.
-const MUTATORS = ['split', 'swap', 'move', 'resize', 'close', 'zoom', 'open'];
-function assertReadOnlyLayout(calls) {
+// would be this plugin rearranging a layout it did not build — and anything that writes to
+// a terminal would be it typing into a shell it cannot read.
+const FORBIDDEN = ['split', 'swap', 'move', 'resize', 'close', 'zoom', 'open', 'run', 'send-input', 'send-keys', 'paste'];
+function assertReadOnly(calls) {
   for (const call of calls) {
-    for (const verb of MUTATORS) {
+    for (const verb of FORBIDDEN) {
       assert.equal(call.includes(verb), false, `must not run: ${call.join(' ')}`);
     }
   }
 }
 
-test('shellQuote survives quotes, spaces and shell metacharacters', () => {
-  assert.equal(shellQuote('BIT-1'), "'BIT-1'");
-  assert.equal(shellQuote("it's; rm -rf /"), "'it'\\''s; rm -rf /'");
-  assert.equal(shellQuote('/a b/$(id)'), "'/a b/$(id)'");
-});
+test.beforeEach(() => { focused = []; asked = []; });
 
-const GOOD_SPEC = {
-  nodePath: '/usr/bin/node', scriptPath: '/p/bin/issue.js', identifier: 'BIT-1',
-  invocation: 'inv0', configDir: '/cfg', cwd: '/wt/bit-1', paneId: SLOT,
-};
-
-test('buildViewerCommand pins node, script, config and cwd, and quotes every argument', () => {
-  const built = buildViewerCommand(GOOD_SPEC);
-  assert.equal(built.ok, true);
-  assert.equal(built.command,
-    "'/usr/bin/env' '-u' 'NODE_OPTIONS' '/usr/bin/node' '/p/bin/issue.js' '--issue' 'BIT-1' '--invocation' 'inv0' '--config-dir' '/cfg' '--cwd' '/wt/bit-1' '--pane' 'w9:p2'");
-});
-
-// NODE_OPTIONS is inherited by the child otherwise, and it can inject --import/--require
-// before a line of the viewer runs. `env -u` rather than a `NAME= cmd` assignment prefix:
-// the slot's shell may be fish or csh, where an assignment is not a command prefix.
-test('buildViewerCommand clears NODE_OPTIONS with a prefix every allowed shell accepts', () => {
-  const built = buildViewerCommand(GOOD_SPEC);
-  assert.match(built.command, /^'\/usr\/bin\/env' '-u' 'NODE_OPTIONS' /);
-  assert.equal(built.command.includes('NODE_OPTIONS='), false, 'not an assignment prefix');
-});
-
-test('buildViewerCommand refuses arguments that cannot be typed as one line', () => {
-  const bad = (identifier) => buildViewerCommand({ ...GOOD_SPEC, identifier });
-  // A newline would submit a second command at the prompt.
-  assert.equal(bad('BIT-1\nrm -rf /').ok, false);
-  assert.equal(bad('BIT-\t1').ok, false);
-  assert.equal(bad('').ok, false);
-});
-
-// Without all four, the shell's own cwd and PATH would decide which repository the viewer
-// routes against and which node runs it.
-test('buildViewerCommand requires every path to be present and absolute', () => {
-  for (const [field, name] of [['nodePath', 'node'], ['scriptPath', 'script'], ['configDir', 'config directory'], ['cwd', 'checkout']]) {
-    for (const value of [undefined, null, '', 'relative/path', './x']) {
-      const out = buildViewerCommand({ ...GOOD_SPEC, [field]: value });
-      assert.equal(out.ok, false, `${field}=${JSON.stringify(value)} must be refused`);
-      assert.match(out.error, new RegExp(`absolute ${name} path`));
-    }
-  }
-});
+// ---------------------------------------------------------------------------
+// Configuration and replies
 
 test('slotSettings requires both labels and never invents one', () => {
   assert.match(slotSettings({}).error, /issueTabLabel and issuePaneLabel/);
   assert.match(slotSettings({ issueTabLabel: 'Crew' }).error, /issuePaneLabel/);
-  const ok = slotSettings(CONFIG);
-  assert.deepEqual([ok.ok, ok.tabLabel, ok.paneLabel, ok.settleMs, ok.pollMs], [true, 'Crew', 'Issue / Utility', 1000, 200]);
-  // Nonsense timings fall back to the built-in bounds rather than disabling the deadline.
-  const defaults = slotSettings({ issueTabLabel: 'a', issuePaneLabel: 'b', issueSlotSettleMs: -1, issueSlotPollMs: 0 });
-  assert.ok(defaults.settleMs > 0 && defaults.settleMs <= 60000);
-  assert.ok(defaults.pollMs > 0 && defaults.pollMs <= defaults.settleMs);
+  const s = slotSettings({ issueTabLabel: 'Crew', issuePaneLabel: 'Issue' });
+  assert.equal(s.ok, true);
+  assert.equal(s.settleMs, 5000);
+  assert.equal(s.pollMs, 200);
+  assert.equal(s.commandMs, 5000);
+  // Out-of-range values fall back rather than removing the bound, and a poll never
+  // outlasts the deadline it is polling towards.
+  assert.equal(slotSettings({ issueTabLabel: 'a', issuePaneLabel: 'b', issueSlotSettleMs: -1 }).settleMs, 5000);
+  assert.equal(slotSettings({ issueTabLabel: 'a', issuePaneLabel: 'b', issueSlotCommandMs: 999999 }).commandMs, 5000);
+  assert.equal(slotSettings({ issueTabLabel: 'a', issuePaneLabel: 'b', issueSlotSettleMs: 50 }).pollMs, 50);
 });
 
 test('readWorktreeWorkspace takes the workspace from the reply, and rejects an incoherent one', () => {
   const good = readWorktreeWorkspace(worktreeStdout());
-  assert.deepEqual([good.ok, good.workspaceId, good.checkoutPath], [true, WS, '/wt/bit-1']);
+  assert.deepEqual(good, { ok: true, workspaceId: WS, checkoutPath: CHECKOUT });
   assert.match(readWorktreeWorkspace('not json').error, /unparseable/);
   assert.match(readWorktreeWorkspace('{"result":{}}').error, /no workspace id/);
-  // A tab that belongs to a different workspace means the reply is not one workspace.
-  const crossed = worktreeStdout({ tab: tab({ workspace_id: 'wOTHER' }) });
-  assert.match(readWorktreeWorkspace(crossed).error, /tab belongs to wOTHER/);
-  const crossedPane = worktreeStdout({ root_pane: pane({ pane_id: 'wX:p1', workspace_id: 'wX' }) });
-  assert.match(readWorktreeWorkspace(crossedPane).error, /root pane belongs to wX/);
+  const foreignTab = worktreeStdout({ tab: tab({ workspace_id: 'w8' }) });
+  assert.match(readWorktreeWorkspace(foreignTab).error, /tab belongs to w8/);
+  const foreignPane = worktreeStdout({ root_pane: pane({ workspace_id: 'w8' }) });
+  assert.match(readWorktreeWorkspace(foreignPane).error, /root pane belongs to w8/);
 });
 
-// The viewer's cwd decides which repository it routes against, so it has to come from the
-// reply. Falling back to the shell's own directory would silently pick another checkout.
 test('readWorktreeWorkspace demands an absolute checkout path from the reply', () => {
-  for (const worktree of [undefined, {}, { path: '' }, { path: 'relative/wt' }, { path: 42 }]) {
-    const out = readWorktreeWorkspace(worktreeStdout({ worktree }));
-    assert.equal(out.ok, false, JSON.stringify(worktree));
-    assert.match(out.error, /no absolute checkout path/);
-  }
-  // The workspace's own worktree block is an acceptable second source.
-  const viaWorkspace = JSON.stringify({ result: {
-    type: 'worktree_opened',
-    workspace: { workspace_id: WS, active_tab_id: TAB, worktree: { checkout_path: '/wt/bit-1' } },
+  assert.match(readWorktreeWorkspace(worktreeStdout({ worktree: { path: 'wt/bit-1' } })).error, /absolute checkout/);
+  assert.match(readWorktreeWorkspace(worktreeStdout({ worktree: {} })).error, /absolute checkout/);
+  // The older reply shape carries it under the workspace instead.
+  const nested = JSON.stringify({ result: {
+    workspace: { workspace_id: WS, worktree: { checkout_path: CHECKOUT } },
   } });
-  assert.deepEqual(readWorktreeWorkspace(viaWorkspace).checkoutPath, '/wt/bit-1');
+  assert.equal(readWorktreeWorkspace(nested).checkoutPath, CHECKOUT);
 });
 
 test('selectSlot demands exactly one labeled tab and one labeled pane inside it', () => {
-  const panes = [pane(), pane({ pane_id: 'w9:p3', label: 'Worker 1' })];
+  const panes = [pane()];
   assert.deepEqual(selectSlot([tab()], panes, WS, 'Crew', 'Issue / Utility'), { ok: true, tabId: TAB, paneId: SLOT });
-  // Renamed tab.
-  assert.match(selectSlot([tab({ label: 'Renamed Crew' })], panes, WS, 'Crew', 'Issue / Utility').error, /no tab labeled/);
-  // Duplicated tab: two candidates, so there is nothing to pick.
-  assert.match(selectSlot([tab(), tab({ tab_id: 'w9:t2' })], panes, WS, 'Crew', 'Issue / Utility').error, /2 tabs labeled .*w9:t1, w9:t2/);
-  // Renamed slot.
-  assert.match(selectSlot([tab()], [pane({ label: 'Notes' })], WS, 'Crew', 'Issue / Utility').error, /no pane labeled/);
-  // Duplicated slot.
-  assert.match(selectSlot([tab()], [pane(), pane({ pane_id: 'w9:p5' })], WS, 'Crew', 'Issue / Utility').error, /2 panes labeled/);
-  // A scoped inventory cannot contain a foreign workspace or an unknown tab.
-  assert.match(selectSlot([tab()], [pane({ workspace_id: 'wX' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
-  assert.match(selectSlot([tab()], [pane({ tab_id: 'w9:t7' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
-  // Malformed inventory is a failure, never an empty match set treated as "renamed".
+  assert.match(selectSlot([tab({ label: 'Other' })], panes, WS, 'Crew', 'Issue / Utility').error, /no tab labeled/);
+  const twoTabs = [tab(), tab({ tab_id: 'w9:t2' })];
+  assert.match(selectSlot(twoTabs, panes, WS, 'Crew', 'Issue / Utility').error, /2 tabs labeled/);
+  const twoPanes = [pane(), pane({ pane_id: 'w9:p3' })];
+  assert.match(selectSlot([tab()], twoPanes, WS, 'Crew', 'Issue / Utility').error, /2 panes labeled/);
+  assert.match(selectSlot([tab()], [pane({ label: 'Other' })], WS, 'Crew', 'Issue / Utility').error, /no pane labeled/);
+  // A pane in another workspace, or in a tab this workspace does not have, is a reply we
+  // cannot reason about — not something to filter out quietly.
+  assert.match(selectSlot([tab()], [pane({ workspace_id: 'w8' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
+  assert.match(selectSlot([tab()], [pane({ tab_id: 'w9:t9' })], WS, 'Crew', 'Issue / Utility').error, /invalid pane inventory/);
   assert.match(selectSlot(null, panes, WS, 'Crew', 'Issue / Utility').error, /no tabs/);
-  assert.match(selectSlot([tab()], null, WS, 'Crew', 'Issue / Utility').error, /no panes/);
 });
 
 test('delivery refuses incomplete or conflicting scoped inventories before touching the slot', async () => {
-  const invalidTabs = [null, {}, tab({ workspace_id: undefined }), tab({ workspace_id: 'wOTHER' }),
-    tab({ tab_id: ' ' }), tab({ tab_id: TAB, label: 'Notes' })];
-  const invalidPanes = [null, {}, pane({ workspace_id: undefined }), pane({ workspace_id: 'wOTHER' }),
-    pane({ pane_id: ' ' }), pane({ tab_id: undefined }), pane({ tab_id: 'w9:t404' }),
-    pane({ pane_id: SLOT, label: 'Notes' })];
-  for (const [kind, values] of [['tab', invalidTabs], ['pane', invalidPanes]]) {
-    for (const value of values) {
-      focused = [];
-      const handlers = happy();
-      handlers[`${kind} list`] = kind === 'tab' ? tabsReply([tab(), value]) : panesReply([pane(), value]);
-      const h = fakeHerdr(handlers);
-      const result = await deliver({ exec: h.exec });
-      assert.equal(result.ok, false, `${kind}: ${JSON.stringify(value)}`);
-      assert.match(result.error, new RegExp(`invalid ${kind} inventory`));
-      assert.ok(h.calls.every((c) => c[2] === 'list'), 'no process, input or focus operation');
-      assert.deepEqual(focused, []);
-    }
-  }
-});
-
-test('classifyForeground only calls it a shell when the shell itself is in front', () => {
-  assert.equal(classifyForeground(idleShell(), SLOT).kind, 'shell');
-  assert.equal(classifyForeground(busyShell(), SLOT).kind, 'busy');
-  // The right name but a different pid: a remembered shell pid is not ownership.
-  const impostor = idleShell({ foreground_processes: [{ pid: 999, name: 'zsh', argv: ['-zsh'] }], foreground_process_group_id: 999 });
-  assert.equal(classifyForeground(impostor, SLOT).kind, 'busy');
-  // The shell's own pid, but a job holds the foreground process group.
-  assert.equal(classifyForeground(idleShell({ foreground_process_group_id: 41 }), SLOT).kind, 'busy');
-  // Something we do not recognize is never typed into.
-  const unknown = idleShell({ foreground_processes: [{ pid: 22278, name: 'claude', argv: ['claude'] }] });
-  assert.equal(classifyForeground(unknown, SLOT).kind, 'unknown');
-  assert.equal(classifyForeground(idleShell({ foreground_processes: [] }), SLOT).kind, 'unknown');
-  assert.equal(classifyForeground(null, SLOT).kind, 'unknown');
-  // Process info about a different pane answers a different question.
-  assert.equal(classifyForeground(idleShell(), 'w9:p7').kind, 'unknown');
-  // Two foreground processes: a pipeline is running.
-  const pipeline = idleShell({ foreground_processes: [{ pid: 1, name: 'zsh' }, { pid: 2, name: 'grep' }] });
-  assert.equal(classifyForeground(pipeline, SLOT).kind, 'busy');
-});
-
-// herdr answers with a null shell_pid and a null group, and an empty process list, when it
-// could not read the foreground job at all. That is missing evidence, and missing evidence
-// must never come out as "idle shell, go ahead and type".
-test('classifyForeground treats absent or impossible process ids as unknown', () => {
-  for (const info of [
-    idleShell({ shell_pid: null }),
-    idleShell({ shell_pid: 0 }),
-    idleShell({ shell_pid: -1 }),
-    idleShell({ shell_pid: 22278.5 }),
-    idleShell({ foreground_process_group_id: null }),
-    idleShell({ foreground_process_group_id: 0 }),
-    idleShell({ foreground_process_group_id: -3 }),
-    idleShell({ foreground_processes: [{ pid: null, name: 'zsh' }] }),
-    idleShell({ foreground_processes: [{ pid: 0, name: 'zsh' }] }),
+  for (const [label, panes] of [
+    ['a duplicate pane id', [pane(), pane()]],
+    ['a pane with no id', [pane({ pane_id: '' })]],
+    ['a pane whose id is padded', [pane({ pane_id: ' w9:p2 ' })]],
   ]) {
-    assert.equal(classifyForeground(info, SLOT).kind, 'unknown', JSON.stringify(info));
+    const { exec, calls } = fakeHerdr({ ...happy(), 'pane list': panesReply(panes) });
+    const res = await deliver({ exec });
+    assert.equal(res.ok, false, label);
+    assert.match(res.error, /invalid pane inventory/);
+    assert.equal(calls.some((c) => c[2] === 'process-info'), false, 'no process was even inspected');
+    assertReadOnly(calls);
   }
 });
 
-test('classifyForeground reads our viewer identity out of its live argv', () => {
-  const seen = classifyForeground(viewerFor('BIT-1', 'inv7'), SLOT);
-  assert.deepEqual([seen.kind, seen.issue, seen.invocation, seen.paneId], ['viewer', 'BIT-1', 'inv7', SLOT]);
+// ---------------------------------------------------------------------------
+// What is in front of the pane
+
+test('classifyForeground recognizes the issue host, and nothing else', () => {
+  const host = classifyForeground(hostFront(), SLOT);
+  assert.equal(host.kind, 'host');
+  assert.equal(host.pid, HOST_PID);
+  // Every rejection below is a refusal to deliver, not a fallback to something weaker.
+  assert.equal(classifyForeground(hostFront({}, { argv: [process.execPath, '/elsewhere/slot-host.js', '--pane', SLOT] }), SLOT).kind, 'busy');
+  assert.equal(classifyForeground(hostFront({}, { argv: [process.execPath, HOST_SCRIPT] }), SLOT).kind, 'busy');
+  assert.equal(classifyForeground(hostFront({}, { argv: ['vim', HOST_SCRIPT, '--pane', SLOT] }), SLOT).kind, 'busy');
+  assert.equal(classifyForeground(hostFront({}, { name: 'vim' }), SLOT).kind, 'busy');
+  // A host started for another pane is publishing somewhere else; it is not this slot's.
+  const strayPane = classifyForeground(hostFront({}, { argv: hostArgv('w9:p7') }), SLOT);
+  assert.equal(strayPane.kind, 'unknown');
+  assert.match(strayPane.detail, /started for w9:p7/);
+  // The host has to be what the tty is giving input to.
+  assert.equal(classifyForeground(hostFront({ foreground_process_group_id: 999 }), SLOT).kind, 'busy');
 });
 
-// "argv mentions the script somewhere" is not identity: any process can carry that path in
-// an argument. Only the exact shape lib/slot.js builds counts.
-test('classifyForeground refuses to call anything else a viewer', () => {
-  const withArgv = (argv, over = {}) => ({
-    ...viewerFor('BIT-1', 'inv7'),
-    foreground_processes: [{ pid: 30001, name: 'node', argv0: 'node', argv, ...over }],
-  });
-  // An editor opened on the viewer source.
-  assert.notEqual(classifyForeground(withArgv(['/usr/bin/vim', VIEWER_SCRIPT]), SLOT).kind, 'viewer');
-  // A shell wrapper that merely passes the path along.
-  assert.notEqual(classifyForeground(withArgv(['/bin/sh', '-c', `node ${VIEWER_SCRIPT}`]), SLOT).kind, 'viewer');
-  // The script somewhere other than argv[1].
-  assert.notEqual(classifyForeground(withArgv([process.execPath, '--inspect', VIEWER_SCRIPT]), SLOT).kind, 'viewer');
-  // Node running some other script.
-  assert.notEqual(classifyForeground(withArgv([process.execPath, '/elsewhere/app.js']), SLOT).kind, 'viewer');
-  // Our script, but started by hand without the flags that make it identifiable.
-  assert.notEqual(classifyForeground(withArgv([process.execPath, VIEWER_SCRIPT])).kind, 'viewer');
-  assert.notEqual(classifyForeground(withArgv([process.execPath, VIEWER_SCRIPT, '--issue', 'BIT-1']), SLOT).kind, 'viewer');
-  assert.notEqual(classifyForeground(withArgv(viewerArgv('BIT-1', 'inv7').filter((a) => a !== '--pane' && a !== SLOT)), SLOT).kind, 'viewer');
-  // argv says node, the process does not.
-  assert.notEqual(classifyForeground(withArgv(viewerArgv('BIT-1', 'inv7'), { name: 'python3' }), SLOT).kind, 'viewer');
+test('no shell is ever an acceptable slot, idle-looking or not', () => {
+  // The P1 shape: a shell alone in the foreground, its own process group leader. An idle
+  // prompt and a shell blocked in `read` are the same observation, so both are refused.
+  for (const info of [idleShell(), readingShell()]) {
+    const state = classifyForeground(info, SLOT);
+    assert.equal(state.kind, 'busy');
+    assert.match(state.detail, /is running, not the issue host/);
+  }
 });
 
-test('delivery types the viewer command into a uniquely identified idle shell', async () => {
+test('classifyForeground treats absent or impossible evidence as unknown', () => {
+  assert.equal(classifyForeground(null, SLOT).kind, 'unknown');
+  assert.equal(classifyForeground({ pane_id: 'w9:p3' }, SLOT).kind, 'unknown');
+  assert.match(classifyForeground({ pane_id: SLOT, foreground_processes: [] }, SLOT).detail, /no foreground process/);
+  assert.equal(classifyForeground(hostFront({}, { pid: 0 }), SLOT).kind, 'unknown');
+  assert.equal(classifyForeground(hostFront({}, { pid: null }), SLOT).kind, 'unknown');
+  assert.equal(classifyForeground(hostFront({ foreground_process_group_id: null }), SLOT).kind, 'unknown');
+  // More than one process in the foreground is a job, whatever the names are.
+  const two = { ...hostFront(), foreground_processes: [...hostFront().foreground_processes, { pid: 5, name: 'node', argv: hostArgv() }] };
+  assert.equal(classifyForeground(two, SLOT).kind, 'busy');
+});
+
+// ---------------------------------------------------------------------------
+// Delivery
+
+test('delivery hands the issue to the live host and types nothing anywhere', async () => {
   const { exec, calls } = fakeHerdr(happy());
-  const out = await deliver({ exec });
-  assert.deepEqual([out.ok, out.action, out.paneId, out.invocation], [true, 'launched', SLOT, 'inv0']);
-  const run = calls.find((c) => c[1] === 'pane' && c[2] === 'run');
-  assert.deepEqual(run.slice(0, 4), ['herdr', 'pane', 'run', SLOT]);
-  assert.equal(run[4],
-    `'/usr/bin/env' '-u' 'NODE_OPTIONS' ${shellQuote(process.execPath)} ${shellQuote(VIEWER_SCRIPT)} '--issue' 'BIT-1' '--invocation' 'inv0' '--config-dir' '/cfg' '--cwd' '/wt/bit-1' '--pane' 'w9:p2'`);
-  // Inventory is always workspace-scoped: the focused pane belongs to whoever is at the
-  // keyboard, which may be another client entirely.
-  for (const c of calls.filter((x) => x[2] === 'list')) assert.ok(c.includes('--workspace') && c.includes(WS));
-  assert.equal(calls.some((c) => c[2] === 'current' || c[2] === 'focus'), false);
-  assertReadOnlyLayout(calls);
+  const res = await deliver({ exec });
+  assert.deepEqual(res, { ok: true, action: 'accepted', paneId: SLOT, issue: 'BIT-1', host: HOST_ID });
+  assert.equal(asked.length, 1);
+  // The request names the host it was addressed to, and carries an issue — never a
+  // command, a script or an environment.
+  assert.deepEqual(asked[0].request, {
+    protocol: 'wfl-host-1', id: 'nonce0', op: 'show', issue: 'BIT-1',
+    pane: SLOT, host: HOST_ID, pid: HOST_PID, checkout: CHECKOUT,
+  });
+  assert.equal(asked[0].socketPath, HOST_SOCK);
+  assert.deepEqual(focused, [], 'a fresh delivery does not move the user');
+  assertReadOnly(calls);
+  // Every native call is workspace- or pane-scoped, and none of them asks about "current".
+  for (const c of calls.filter((x) => x[2] === 'list')) assert.ok(c.includes(WS));
+  assert.equal(calls.some((c) => c.includes('--current')), false);
 });
 
-test('delivery waits out a layout that has not been applied yet', async () => {
-  // The tab exists from the start, the slot pane only appears on the third look.
+test('a repeat delivery focuses the host that already holds this issue', async () => {
+  const { exec, calls } = fakeHerdr(happy());
+  const res = await deliver({
+    exec,
+    ask: async (socketPath, request) => {
+      asked.push({ socketPath, request });
+      return { ok: true, status: 'showing', issue: request.issue, detail: 'showing' };
+    },
+  });
+  assert.deepEqual(res, { ok: true, action: 'focused', paneId: SLOT, issue: 'BIT-1', host: HOST_ID });
+  assert.deepEqual(focused, [SLOT]);
+  assertReadOnly(calls);
+  // Focus moves the user, so ownership is proved again after the host confirms: three
+  // process-info reads, three metadata reads, and only then a focus.
+  assert.equal(calls.filter((c) => c[2] === 'process-info').length, 3);
+  assert.equal(calls.filter((c) => c[2] === 'get').length, 3);
+});
+
+test('a host that has gone between the confirmation and the focus is not focused', async () => {
   const { exec, calls } = fakeHerdr({
     ...happy(),
-    'pane list': (nth) => panesReply(nth < 2 ? [pane({ pane_id: 'w9:p1', label: 'Orchestrator' })] : [pane()]),
+    // The third look — the one taken immediately before focusing — finds a shell.
+    'pane process-info': (nth) => processReply(nth < 2 ? hostFront() : idleShell()),
   });
-  const out = await deliver({ exec });
-  assert.deepEqual([out.ok, out.action], [true, 'launched']);
-  assert.ok(calls.filter((c) => c[1] === 'pane' && c[2] === 'list').length >= 3, 'polled until the slot appeared');
+  const res = await deliver({
+    exec,
+    ask: async () => ({ ok: true, status: 'showing', issue: 'BIT-1', detail: 'showing' }),
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /not running the issue host/);
+  assert.deepEqual(focused, [], 'nothing moved the user');
+  assertReadOnly(calls);
+});
+
+test('a busy host is reported, and nothing is retried into it', async () => {
+  const { exec, calls } = fakeHerdr(happy());
+  const res = await deliver({
+    exec,
+    ask: async () => ({ ok: false, error: 'issue host is busy: showing BIT-9' }),
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /busy: showing BIT-9/);
+  assert.deepEqual(focused, []);
+  assertReadOnly(calls);
+});
+
+test('a slot with no host says so, and says how to start one', async () => {
+  for (const info of [idleShell(), readingShell(), { pane_id: SLOT, foreground_processes: [] }]) {
+    const { exec, calls } = fakeHerdr({ ...happy(), 'pane process-info': processReply(info) });
+    const res = await deliver({ exec });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /is not running the issue host/);
+    // The fallback is explicit: this is the command, for this pane, with this config.
+    assert.match(res.error, new RegExp(`start it there with: node ${HOST_SCRIPT.replace(/[/.]/g, '\\$&')} --pane ${SLOT} --config-dir /cfg`));
+    assert.equal(asked.length, 0, 'nothing was sent anywhere');
+    assertReadOnly(calls);
+  }
+});
+
+test('metadata left behind by an exited host never counts as a live one', async () => {
+  // Tokens from a host that is gone, in front of a pane that is back at its shell.
+  const { exec } = fakeHerdr({ ...happy(), 'pane process-info': processReply(idleShell()) });
+  const stale = await deliver({ exec });
+  assert.equal(stale.ok, false);
+  assert.equal(asked.length, 0);
+
+  // A live host whose published pid is not the pid actually in the foreground: the tokens
+  // are somebody else's, so they prove nothing about this process.
+  const mismatched = fakeHerdr({ ...happy(), 'pane get': paneReply(pane({ tokens: hostTokens({ 'wfl-host-pid': '999' }) })) });
+  const res = await deliver({ exec: mismatched.exec });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /publishes host 999 but is running 30001/);
+  assert.equal(asked.length, 0);
+});
+
+test('incomplete or unusable host metadata refuses rather than guesses', async () => {
+  for (const [label, tokens] of [
+    ['no tokens at all', {}],
+    ['no socket', hostTokens({ 'wfl-host-sock': undefined })],
+    ['no instance', hostTokens({ 'wfl-host-id': '' })],
+    ['a relative socket path', hostTokens({ 'wfl-host-sock': 'relative.sock' })],
+    ['a pid that is not one', hostTokens({ 'wfl-host-pid': 'many' })],
+  ]) {
+    const { exec } = fakeHerdr({ ...happy(), 'pane get': paneReply(pane({ tokens })) });
+    const res = await deliver({ exec });
+    assert.equal(res.ok, false, label);
+    assert.equal(asked.length, 0, label);
+  }
+});
+
+test('a host running in another checkout is not this worktree host', async () => {
+  const { exec } = fakeHerdr({
+    ...happy(),
+    'pane get': paneReply(pane({ tokens: hostTokens({ 'wfl-host-cwd': checkoutDigest('/wt/other') }) })),
+  });
+  const res = await deliver({ exec });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /another checkout/);
+  assert.equal(asked.length, 0);
+});
+
+test('the pane the host publishes on has to still be the configured slot', async () => {
+  for (const over of [{ label: 'Renamed' }, { tab_id: 'w9:t9' }, { workspace_id: 'w8' }]) {
+    const { exec } = fakeHerdr({ ...happy(), 'pane get': paneReply(pane({ tokens: hostTokens(), ...over })) });
+    const res = await deliver({ exec });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /no longer matches the configured slot/);
+    assert.equal(asked.length, 0);
+  }
+});
+
+test('a host replaced between the two looks stops the request', async () => {
+  const { exec } = fakeHerdr({
+    ...happy(),
+    // Same pane, same label, different instance: the host quit and another one started.
+    'pane get': (nth) => paneReply(pane({ tokens: hostTokens(nth === 0 ? {} : { 'wfl-host-id': 'instance-token-1' }) })),
+  });
+  const res = await deliver({ exec });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /changed issue host while preparing/);
+  assert.equal(asked.length, 0);
+});
+
+test('a slot that moves between the two looks stops the request', async () => {
+  const { exec } = fakeHerdr({
+    ...happy(),
+    'pane list': (nth) => panesReply([pane({ pane_id: nth === 0 ? SLOT : 'w9:p5' })]),
+  });
+  const res = await deliver({ exec });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /slot moved from w9:p2 to w9:p5/);
+  assert.equal(asked.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Bounds
+
+test('delivery waits out a layout that has not been applied yet', async () => {
+  const slept = [];
+  const { exec } = fakeHerdr({
+    ...happy(),
+    // The Crew tab appears on the third look, the way an asynchronous layout arrives.
+    'tab list': (nth) => tabsReply(nth < 2 ? [] : [tab()]),
+    'pane list': (nth) => panesReply(nth < 2 ? [] : [pane()]),
+  });
+  const res = await deliver({ exec, now: clock(100), sleep: async (ms) => slept.push(ms) });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(slept.length, 2);
+  // Each wait is capped by the poll interval and by whatever is left of the deadline.
+  for (const ms of slept) assert.ok(ms <= 200 && ms > 0, `slept ${ms}`);
 });
 
 test('delivery gives up on a finite deadline and reports what it last saw', async () => {
-  const { exec, calls } = fakeHerdr({ ...happy(), 'pane list': panesReply([pane({ label: 'Notes' })]) });
-  const out = await deliver({ exec });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /no pane labeled "Issue \/ Utility"/);
-  assert.equal(calls.some((c) => c[2] === 'run'), false, 'nothing was typed anywhere');
-  // settleMs 1000 / pollMs 200 is a bounded number of looks, not an open-ended wait.
-  assert.ok(calls.filter((c) => c[1] === 'pane' && c[2] === 'list').length <= 8);
-  assertReadOnlyLayout(calls);
+  const slept = [];
+  // A workspace whose layout never arrives: no tabs, and so no panes either.
+  const { exec, calls } = fakeHerdr({ ...happy(), 'tab list': tabsReply([]), 'pane list': panesReply([]) });
+  const res = await deliver({ exec, now: clock(300), sleep: async (ms) => slept.push(ms) });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no tab labeled "Crew"/);
+  // 1000ms of budget in 300ms steps: it stops, and it stops without waiting past the end.
+  assert.ok(calls.length <= 8, `gave up after ${calls.length} calls`);
+  for (const ms of slept) assert.ok(ms > 0 && ms <= 200);
+  assertReadOnly(calls);
 });
 
-test('a repeat delivery focuses the same viewer and sends it no input', async () => {
-  focused = [];
-  const { exec, calls } = fakeHerdr({
-    ...happy(),
-    'pane process-info': processReply(viewerFor('BIT-1', 'inv7')),
-    'pane get': paneReply(pane({ tokens: { [ISSUE_TOKEN]: 'BIT-1', [INVOCATION_TOKEN]: 'inv7' } })),
-  });
-  const out = await deliver({ exec });
-  assert.deepEqual([out.ok, out.action, out.paneId], [true, 'focused', SLOT]);
-  assert.deepEqual(focused, [SLOT], 'focused exactly that pane, over the socket');
-  assert.equal(calls.some((c) => c[2] === 'run' || c[2] === 'send-text' || c[2] === 'send-keys'), false);
-  // `herdr pane focus` is directional only, so a CLI focus would move the wrong pane.
-  assert.equal(calls.some((c) => c[2] === 'focus'), false, 'no CLI focus was invented');
-  assertReadOnlyLayout(calls);
+test('every native call carries the deadline its caller owns', async () => {
+  const { exec, calls, options } = fakeHerdr(happy());
+  const res = await deliver({ exec });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(calls.length, options.length);
+  for (const [i, opts] of options.entries()) {
+    assert.equal(typeof opts.timeout, 'number', `${calls[i].join(' ')} was spawned with no timeout`);
+    assert.ok(opts.timeout > 0 && opts.timeout <= 1000, `${calls[i].join(' ')} timeout ${opts.timeout}`);
+  }
+  // The settle loop's commands are bounded by what is left of the settle budget; the
+  // checks after it by the per-command budget.
+  const settle = options.slice(0, 2).map((o) => o.timeout);
+  for (const ms of settle) assert.ok(ms <= 1000);
+  for (const opts of options.slice(2)) assert.equal(opts.timeout, 400);
 });
 
-// Focusing moves the user, so it earns the same second look that typing does.
-test('focus revalidates the slot and the live viewer immediately before moving the user', async () => {
-  const meta = paneReply(pane({ tokens: { [ISSUE_TOKEN]: 'BIT-1', [INVOCATION_TOKEN]: 'inv7' } }));
-  // The viewer exits between the first look and the focus.
-  focused = [];
-  const exited = fakeHerdr({
-    ...happy(),
-    'pane process-info': (nth) => processReply(nth === 0 ? viewerFor('BIT-1', 'inv7') : idleShell()),
-    'pane get': meta,
-  });
-  const gone = await deliver({ exec: exited.exec });
-  assert.equal(gone.ok, false);
-  assert.match(gone.error, /stopped holding its issue viewer/);
-  assert.deepEqual(focused, []);
-  assert.equal(exited.calls.some((c) => c[2] === 'run'), false, 'and the freed shell is not typed into either');
-
-  // A different viewer takes the slot between the first look and the focus.
-  focused = [];
-  const swapped = fakeHerdr({
-    ...happy(),
-    'pane process-info': (nth) => processReply(viewerFor('BIT-1', nth === 0 ? 'inv7' : 'inv8')),
-    'pane get': meta,
-  });
-  const changed = await deliver({ exec: swapped.exec });
-  assert.equal(changed.ok, false);
-  assert.deepEqual(focused, []);
-
-  // The slot is renamed out from under us between the first look and the focus.
-  focused = [];
-  const renamed = fakeHerdr({
-    ...happy(),
-    'pane list': (nth) => panesReply(nth === 0 ? [pane()] : [pane({ pane_id: 'w9:p6' })]),
-    'pane process-info': processReply(viewerFor('BIT-1', 'inv7')),
-    'pane get': meta,
-  });
-  const moved = await deliver({ exec: renamed.exec });
-  assert.equal(moved.ok, false);
-  assert.match(moved.error, /slot moved from w9:p2 to w9:p6/);
-  assert.deepEqual(focused, []);
+test('a settle deadline that is already spent spawns nothing at all', async () => {
+  const { exec, calls } = fakeHerdr(happy());
+  // A clock that jumps past the deadline before the first look.
+  const res = await deliver({ exec, now: clock(5000) });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /did not settle within 1000ms/);
+  assert.deepEqual(calls, [], 'no subprocess was started to spend time it did not have');
 });
 
-test('a focus that does not land is reported as a failure', async () => {
+test('a herdr command that times out is reported as a timeout, not a guess', async () => {
   const { exec } = fakeHerdr({
     ...happy(),
-    'pane process-info': processReply(viewerFor('BIT-1', 'inv7')),
-    'pane get': paneReply(pane({ tokens: { [ISSUE_TOKEN]: 'BIT-1', [INVOCATION_TOKEN]: 'inv7' } })),
+    'pane process-info': { status: 1, stdout: '', stderr: 'timed out after 400ms', timedOut: true },
   });
-  const out = await deliver({ exec, focus: async () => ({ ok: false, error: 'herdr pane.focus timed out after 3000ms' }) });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /pane\.focus timed out/);
+  const res = await deliver({ exec });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /pane process-info/);
+  assert.equal(asked.length, 0);
 });
 
-test('a viewer for another issue is busy, not something to take over', async () => {
-  const { exec, calls } = fakeHerdr({
-    ...happy(),
-    'pane process-info': processReply(viewerFor('BIT-9', 'inv9')),
-    'pane get': paneReply(pane({ tokens: { [ISSUE_TOKEN]: 'BIT-9', [INVOCATION_TOKEN]: 'inv9' } })),
-  });
-  const out = await deliver({ exec });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /another issue viewer for BIT-9/);
-  assert.equal(calls.some((c) => c[2] === 'run' || c[2] === 'focus'), false);
-});
-
-test('metadata left behind by an exited viewer never counts as a live one', async () => {
-  // The pane still carries this issue's tokens, but the foreground process is a viewer
-  // from a different invocation — the token could only have been left by a dead process.
-  const { exec, calls } = fakeHerdr({
-    ...happy(),
-    'pane process-info': processReply(viewerFor('BIT-1', 'inv-live')),
-    'pane get': paneReply(pane({ tokens: { [ISSUE_TOKEN]: 'BIT-1', [INVOCATION_TOKEN]: 'inv-stale' } })),
-  });
-  const out = await deliver({ exec });
-  assert.equal(out.ok, false);
-  assert.equal(calls.some((c) => c[2] === 'focus'), false);
-  // And with the tokens gone entirely, argv alone is still not agreement.
-  const bare = fakeHerdr({
-    ...happy(),
-    'pane process-info': processReply(viewerFor('BIT-1', 'inv-live')),
-    'pane get': paneReply(pane({ tokens: {} })),
-  });
-  const second = await deliver({ exec: bare.exec });
-  assert.equal(second.ok, false);
-  assert.equal(bare.calls.some((c) => c[2] === 'focus'), false);
-});
-
-test('a busy or unrecognized foreground process is reported, never typed into', async () => {
-  for (const [info, pattern] of [
-    [busyShell(), /cat is running/],
-    [idleShell({ foreground_processes: [{ pid: 22278, name: 'claude', argv: ['claude'] }] }), /unrecognized foreground process claude/],
-    [idleShell({ foreground_processes: [] }), /no foreground process/],
-  ]) {
-    const { exec, calls } = fakeHerdr({ ...happy(), 'pane process-info': processReply(info) });
-    const out = await deliver({ exec });
-    assert.equal(out.ok, false);
-    assert.match(out.error, pattern);
-    assert.equal(calls.some((c) => c[2] === 'run'), false);
-    assertReadOnlyLayout(calls);
-  }
-});
-
-test('an identity that goes stale between the check and the write stops the write', async () => {
-  // Idle on the first look, a job in the foreground on the revalidation pass.
-  const { exec, calls } = fakeHerdr({
-    ...happy(),
-    'pane process-info': (nth) => processReply(nth === 0 ? idleShell() : busyShell()),
-  });
-  const out = await deliver({ exec });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /stopped being a shell prompt/);
-  assert.equal(calls.some((c) => c[2] === 'run'), false);
-
-  // Renamed out from under us between the check and the write.
-  const renamed = fakeHerdr({
-    ...happy(),
-    'pane list': (nth) => panesReply(nth === 0 ? [pane()] : [pane({ pane_id: 'w9:p6' })]),
-  });
-  const moved = await deliver({ exec: renamed.exec });
-  assert.equal(moved.ok, false);
-  assert.match(moved.error, /slot moved from w9:p2 to w9:p6/);
-  assert.equal(renamed.calls.some((c) => c[2] === 'run'), false);
-});
-
-test('failed or malformed native replies produce a diagnostic, not a guess', async () => {
-  const cases = [
-    [{ ...happy(), 'tab list': { status: 1, stdout: '', stderr: 'no such workspace' } }, /tab list failed: no such workspace/],
-    [{ ...happy(), 'pane list': { status: 0, stdout: 'not json', stderr: '' } }, /pane list returned unparseable/],
-    [{ ...happy(), 'pane list': { status: 0, stdout: '{"id":"x"}', stderr: '' } }, /pane list returned no result/],
-    [{ ...happy(), 'pane process-info': { status: 1, stdout: '', stderr: 'pane gone' } }, /process-info failed: pane gone/],
-    [{ ...happy(), 'pane run': { status: 1, stdout: '', stderr: 'send failed' } }, /pane run failed: send failed/],
-  ];
-  for (const [handlers, pattern] of cases) {
-    const { exec, calls } = fakeHerdr(handlers);
-    const out = await deliver({ exec });
-    assert.equal(out.ok, false);
-    assert.match(out.error, pattern);
-    assertReadOnlyLayout(calls);
-  }
-  // process-info about some other pane is not evidence about this one.
-  const { exec } = fakeHerdr({ ...happy(), 'pane process-info': processReply(idleShell({ pane_id: 'w9:p8' })) });
-  assert.match((await deliver({ exec })).error, /process information is for w9:p8/);
-});
+// ---------------------------------------------------------------------------
+// Refusals before any native call
 
 test('delivery refuses before any native call when the slot is not configured', async () => {
   const { exec, calls } = fakeHerdr(happy());
-  const out = await deliver({ exec, config: { issueTabLabel: 'Crew' } });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /issuePaneLabel/);
+  const res = await deliver({ exec, config: { issueTabLabel: 'Crew' } });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /issuePaneLabel/);
   assert.deepEqual(calls, []);
+});
+
+test('an identifier that is not a Linear identifier never reaches a host', async () => {
+  // Shell metacharacters, path traversal and an embedded newline: none of them can mean
+  // anything downstream any more, and none of them gets that far.
+  for (const bad of ['', 'BIT 1', 'BIT-1; rm -rf /', '../../etc/hosts', 'BIT-1\nBIT-2', null]) {
+    const { exec, calls } = fakeHerdr(happy());
+    const res = await deliver({ exec, identifier: bad });
+    assert.equal(res.ok, false, JSON.stringify(bad));
+    assert.match(res.error, /not a Linear issue identifier/);
+    assert.deepEqual(calls, []);
+  }
 });
 
 test('a worktree reply we cannot trust stops delivery before any inventory', async () => {
   const { exec, calls } = fakeHerdr(happy());
-  const out = await deliver({ exec, worktreeStdout: '{"result":{}}' });
-  assert.equal(out.ok, false);
-  assert.match(out.error, /no workspace id/);
+  const res = await deliver({ exec, worktreeStdout: '{"result":{"workspace":{}}}' });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no workspace id/);
   assert.deepEqual(calls, []);
 });
 
-test('viewer metadata args publish and clear the same two tokens', () => {
-  assert.deepEqual(viewerMetadataArgs(SLOT, 'BIT-1', 'inv0'), [
-    'pane', 'report-metadata', SLOT, '--source', 'tdi.worktree-from-linear',
-    '--token', `${ISSUE_TOKEN}=BIT-1`, '--token', `${INVOCATION_TOKEN}=inv0`,
-  ]);
-  assert.deepEqual(viewerMetadataClearArgs(SLOT), [
-    'pane', 'report-metadata', SLOT, '--source', 'tdi.worktree-from-linear',
-    '--clear-token', ISSUE_TOKEN, '--clear-token', INVOCATION_TOKEN,
-  ]);
+test('failed or malformed native replies produce a diagnostic, not a guess', async () => {
+  for (const [key, handler, expected] of [
+    ['tab list', { status: 1, stderr: 'workspace_not_found' }, /tab list failed: workspace_not_found/],
+    ['pane list', 'not json', /pane list returned unparseable output/],
+    ['pane process-info', JSON.stringify({ result: [] }), /pane process-info returned no result/],
+    ['pane get', paneReply({ pane_id: 'w9:p9' }), /pane get answered for w9:p9/],
+  ]) {
+    const { exec, calls } = fakeHerdr({ ...happy(), [key]: handler });
+    const res = await deliver({ exec });
+    assert.equal(res.ok, false, key);
+    assert.match(res.error, expected);
+    assertReadOnly(calls);
+  }
 });

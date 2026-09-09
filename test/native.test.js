@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   callJson, callVoid, focusPane, notificationArgs, paneFocusRequest, paneGetArgs, paneListArgs,
-  paneProcessInfoArgs, paneRunArgs, readFocusReply, reportMetadataArgs, tabListArgs,
+  paneProcessInfoArgs, readFocusReply, reportMetadataArgs, tabListArgs,
 } from '../lib/native.js';
+
+const metadata = () => reportMetadataArgs('w9:p2', 'src', { a: '1' });
 
 test('inventory commands are always scoped to an explicit workspace', () => {
   assert.deepEqual(tabListArgs('w9'), ['tab', 'list', '--workspace', 'w9']);
@@ -23,7 +25,6 @@ test('pane process-info names its pane with --pane, never positionally', () => {
 
 test('the positional pane commands stay positional', () => {
   assert.deepEqual(paneGetArgs('w9:p2'), ['pane', 'get', 'w9:p2']);
-  assert.deepEqual(paneRunArgs('w9:p2', 'echo hi'), ['pane', 'run', 'w9:p2', 'echo hi']);
   assert.deepEqual(notificationArgs('Title', 'Body'), ['notification', 'show', 'Title', '--body', 'Body']);
 });
 
@@ -52,15 +53,32 @@ test('callJson separates a failed command from an unreadable reply', () => {
 test('a herdr binary that cannot be spawned is a diagnostic, not a crash', () => {
   const boom = () => { throw new Error('ENOENT'); };
   assert.match(callJson(boom, 'herdr', paneListArgs('w9')).error, /pane list could not run: ENOENT/);
-  assert.match(callVoid(boom, 'herdr', paneRunArgs('w9:p2', 'x')).error, /pane run could not run: ENOENT/);
+  assert.match(callVoid(boom, 'herdr', metadata()).error, /pane report-metadata could not run: ENOENT/);
 });
 
-// `pane run` and `pane report-metadata` can legitimately print nothing, so exit status is
-// the only signal available for them.
+// `pane report-metadata` can legitimately print nothing, so exit status is the only signal
+// available for it.
 test('callVoid judges acting commands by exit status alone', () => {
-  assert.deepEqual(callVoid(() => ({ status: 0, stdout: '', stderr: '' }), 'herdr', paneRunArgs('w9:p2', 'x')), { ok: true });
-  assert.match(callVoid(() => ({ status: 1, stdout: '', stderr: 'nope' }), 'herdr', paneRunArgs('w9:p2', 'x')).error, /pane run failed: nope/);
-  assert.match(callVoid(() => undefined, 'herdr', paneRunArgs('w9:p2', 'x')).error, /pane run failed/);
+  assert.deepEqual(callVoid(() => ({ status: 0, stdout: '', stderr: '' }), 'herdr', metadata()), { ok: true });
+  assert.match(callVoid(() => ({ status: 1, stdout: '', stderr: 'nope' }), 'herdr', metadata()).error, /pane report-metadata failed: nope/);
+  assert.match(callVoid(() => undefined, 'herdr', metadata()).error, /pane report-metadata failed/);
+});
+
+// Every command this plugin runs is a child process the caller is waiting for, so the
+// caller's deadline has to reach the child itself: a timer around a synchronous spawn
+// cannot interrupt it.
+test('a caller deadline is handed to the subprocess, and a timeout says so', () => {
+  const seen = [];
+  const exec = (cmd, args, opts) => { seen.push(opts); return { status: 0, stdout: '{"result":{"type":"ok"}}', stderr: '' }; };
+  callJson(exec, 'herdr', paneListArgs('w9'), { timeoutMs: 250 });
+  callVoid(exec, 'herdr', metadata(), { timeoutMs: 1.7 });
+  // No budget named means no timeout imposed here; a fractional one still bounds it.
+  callJson(exec, 'herdr', paneListArgs('w9'));
+  assert.deepEqual(seen, [{ timeout: 250 }, { timeout: 1 }, {}]);
+
+  const timedOut = () => ({ status: 1, stdout: '', stderr: 'timed out after 250ms', timedOut: true });
+  assert.match(callJson(timedOut, 'herdr', paneListArgs('w9'), { timeoutMs: 250 }).error, /pane list timed out: timed out after 250ms/);
+  assert.match(callVoid(timedOut, 'herdr', metadata(), { timeoutMs: 250 }).error, /pane report-metadata timed out/);
 });
 
 // ---------------------------------------------------------------------------

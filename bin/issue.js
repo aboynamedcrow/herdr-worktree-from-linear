@@ -1,105 +1,21 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process';
+// The `[[panes]]` issue entrypoint: herdr opens a pane and runs this with the identifier
+// in its environment (`--env HERDR_WFP_ISSUE`). One issue, rendered, held until the pane
+// is closed.
+//
+// This is not how the picker delivers an issue into your own layout — that is
+// bin/slot-host.js, a host you start yourself in the pane you chose. This entrypoint owns
+// a pane herdr made for it, so there is no shell behind it to hand back: it holds.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../lib/config.js';
 import { fetchIssue } from '../lib/linear.js';
-import { formatIssue, formatIssueMarkdown } from '../lib/render.js';
-import { viewerMetadataArgs, viewerMetadataClearArgs } from '../lib/slot.js';
+import { formatIssue } from '../lib/render.js';
+import { hold, showIssue } from '../lib/viewer.js';
 
-const RESIZE_DEBOUNCE_MS = 200;
-// Home, erase screen, erase scrollback: without the last one every re-render would stack
-// another copy of the issue in the host's scrollback.
-const CLEAR = '\x1b[H\x1b[2J\x1b[3J';
-
-// glow pads every line out to the render width and fits tables to it, so a rendered
-// issue cannot reflow: shrinking the pane wraps that padding into blank lines and breaks
-// the table borders. Capturing glow's output to strip the padding is not an option —
-// glow drops all styling when its stdout is not a TTY. So re-render instead.
-function paneWidth() {
-  return Math.max(40, (process.stdout.columns || 80) - 2);
-}
-
-// Hold the pane open after rendering, without acting like a prompt: the tty still echoes,
-// so typing into a finished pane would print stray characters over the issue, and the
-// cursor left sitting below the text reads as an input line. Raw mode stops the echo (and
-// with it any interpretation of Ctrl-C, so quit on it explicitly).
-//
-// Called again after every re-render, so the listeners are wired once: a pair per render
-// would trip Node's 11-listener warning onto stderr, straight into the rendered pane.
-let wired = false;
-export function hold() {
-  process.stdout.write('\x1b[?25l');
-  if (process.stdin.isTTY) process.stdin.setRawMode(true);
-  process.stdin.resume();
-  if (wired) return;
-  wired = true;
-  process.on('exit', () => process.stdout.write('\x1b[?25h'));
-  if (!process.stdin.isTTY) return;
-  process.stdin.on('data', (buf) => {
-    if (buf.includes(0x03) || buf.includes(0x04) || buf.includes(0x71)) process.exit(0);  // Ctrl-C, Ctrl-D, q
-  });
-}
-
-// Render the markdown with glow when it is installed, re-rendering at the new width on
-// resize. Returns false when glow cannot be used, so the caller prints the plain panel
-// instead.
-//
-// No pager: the whole rendered issue goes straight into the pane, so scrolling and
-// selection stay the host's, exactly as in any other pane. A pager would own the mouse
-// (its own tracking, so selection needs shift) or, without --mouse, leave the wheel
-// scrolling only the part already paged through.
-export function renderWithGlow(markdown, fallback) {
-  if (!process.stdout.isTTY) return false;
-  if (spawnSync('sh', ['-c', 'command -v glow']).status !== 0) return false;
-  let child = null;
-  let restart = false;
-  let timer = null;
-  const render = () => {
-    process.stdout.write(CLEAR);
-    // glow probes the terminal background (OSC 10/11) to pick its light/dark style and
-    // waits for the reply on the tty, so this process must not be reading it at the same
-    // time — a resumed stdin here swallows the reply and glow never renders.
-    process.stdin.pause();
-    child = spawn('glow', ['-w', String(paneWidth())], { stdio: ['pipe', 'inherit', 'inherit'] });
-    // A long issue may not fit the pipe buffer, so this write can still be pending when a
-    // resize kills glow: swallow the EPIPE, or the unhandled error takes the pane down.
-    child.stdin.on('error', () => {});
-    child.stdin.end(markdown);
-    const done = (err) => {
-      child = null;
-      if (restart) { restart = false; return render(); }
-      // A glow that starts but fails (bad config, unknown style) leaves a blank pane.
-      if (err) process.stdout.write(fallback);
-      hold();
-    };
-    child.on('error', done);
-    child.on('exit', (code) => done(code ? new Error(`glow exited ${code}`) : null));
-  };
-  // Dragging a pane divider fires a burst of these; only the last one is worth a render.
-  process.stdout.on('resize', () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      if (!child) return render();
-      restart = true;
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-    }, RESIZE_DEBOUNCE_MS);
-  });
-  render();
-  return true;
-}
-
-// Two ways in, and the difference is who chose the arguments.
-//
-//   * As a herdr plugin pane (see [[panes]] "issue"): herdr sets HERDR_PLUGIN_CONFIG_DIR
-//     and the identifier arrives as --env HERDR_WFP_ISSUE.
-//   * Typed into an existing shell by lib/slot.js: context is passed in explicit
-//     flags — absolute config dir, absolute cwd, the issue, the pane to
-//     publish identity on, and the invocation token that makes this run distinguishable
-//     from the last one.
-//
-// Flags win where both are present; the env form stays supported so an existing
-// [[panes]] entrypoint keeps working.
+// Flags win where both are present; the environment form is what herdr's pane command
+// uses. Identity flags do not exist here on purpose — this pane publishes nothing and
+// owns no slot, so there is nothing for it to claim.
 export function parseViewerArgs(argv = [], env = {}) {
   const flag = (name) => {
     const i = argv.indexOf(name);
@@ -109,70 +25,28 @@ export function parseViewerArgs(argv = [], env = {}) {
     identifier: (flag('--issue') || env.HERDR_WFP_ISSUE || '').trim().toUpperCase(),
     configDir: flag('--config-dir') || env.HERDR_PLUGIN_CONFIG_DIR || undefined,
     // loadConfig treats this as the repository root for path-based key selection. An
-    // explicit value keeps that decision off whatever cwd the shell happened to be in.
+    // explicit value keeps that decision off whatever cwd the pane happened to start in.
     cwd: flag('--cwd') || undefined,
-    // Deliberately no environment fallback: publishing identity is only correct for a
-    // pane the sender named, and an inherited HERDR_PANE_ID would make an ordinary
-    // `node bin/issue.js` write metadata onto someone else's pane.
-    paneId: flag('--pane') || null,
-    invocation: flag('--invocation') || null,
   };
-}
-
-// Publish "this pane is showing this issue, started by this invocation" so a repeat
-// delivery can recognize the viewer without sending it any input, and clear it on the way
-// out. Both directions are best effort: herdr may be an older build, the pane may already
-// be gone, and neither failure says anything about whether this process is alive.
-function publishIdentity({ paneId, identifier, invocation }) {
-  if (!paneId || !invocation || !identifier) return;
-  const herdr = process.env.HERDR_BIN_PATH || 'herdr';
-  const report = (args) => {
-    try {
-      spawnSync(herdr, args, { encoding: 'utf8', stdio: 'ignore' });
-    } catch {
-      // An unreachable herdr must not take the issue view down with it.
-    }
-  };
-  report(viewerMetadataArgs(paneId, identifier, invocation));
-  process.on('exit', () => report(viewerMetadataClearArgs(paneId)));
 }
 
 async function main() {
   const args = parseViewerArgs(process.argv.slice(2), process.env);
   const { identifier } = args;
-  publishIdentity(args);
   let issue;
   try {
     const config = loadConfig(args.configDir, args.cwd, process.env, identifier);
     issue = await fetchIssue(config, identifier);
   } catch (err) {
-    // A failed fetch is rendered, not thrown: the worktree and the layout that got us
-    // here are already correct, and the pane must say why rather than vanish.
+    // A failed fetch is rendered, not thrown: the pane must say why rather than vanish.
     issue = { identifier, error: err.message };
   }
-  const plain = formatIssue(issue);
   if (issue.error) {
-    process.stdout.write(plain);
-    // A viewer that owns a slot was typed into a live shell. Hand that shell back instead
-    // of parking it on a failure the user then has to dismiss: the message stays in the
-    // pane's scrollback exactly like any other failed command, the exit status says it
-    // failed, and the exit handler gives the pane's tokens back. A plugin pane has no
-    // shell to return to — exiting there closes the pane and takes the message with it —
-    // so that entrypoint still holds.
-    if (args.paneId && args.invocation) {
-      process.exitCode = 1;
-      return;
-    }
+    process.stdout.write(formatIssue(issue));
     hold();
     return;
   }
-  // Keep the pane alive as a static reference panel (herdr scrollback handles long
-  // descriptions); close it with q, Ctrl-C, or the pane's own key binding. The glow path
-  // holds the pane itself, once glow is done with the tty.
-  if (!renderWithGlow(formatIssueMarkdown(issue), plain)) {
-    process.stdout.write(plain);
-    hold();
-  }
+  showIssue(issue);
 }
 
 // Only when herdr runs this as the pane command — importing it (see test/issue.test.js)
