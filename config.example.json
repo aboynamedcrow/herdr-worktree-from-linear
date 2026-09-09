@@ -1,10 +1,15 @@
 {
-  "linearApiKey": "lin_api_xxx",
+  "linearApiKeyEnvByPath": [
+    { "contains": "hsys", "env": "LINEAR_API_KEY_HSYS" }
+  ],
+  "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
   "issueLimit": 50,
-  "base": "default",
   "teamKey": "BIT",
   "fzfLayout": "down",
   "placement": "right",
   "popupWidth": "80%",
-  "popupHeight": "70%"
+  "popupHeight": "70%",
+  "showIssueDetails": true,
+  "issueTabLabel": "Work",
+  "issuePaneLabel": "Issue"
 }
