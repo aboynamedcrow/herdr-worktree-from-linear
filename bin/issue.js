@@ -151,10 +151,25 @@ async function main() {
     issue = { identifier, error: err.message };
   }
   const plain = formatIssue(issue);
+  if (issue.error) {
+    process.stdout.write(plain);
+    // A viewer that owns a slot was typed into a live shell. Hand that shell back instead
+    // of parking it on a failure the user then has to dismiss: the message stays in the
+    // pane's scrollback exactly like any other failed command, the exit status says it
+    // failed, and the exit handler gives the pane's tokens back. A plugin pane has no
+    // shell to return to — exiting there closes the pane and takes the message with it —
+    // so that entrypoint still holds.
+    if (args.paneId && args.invocation) {
+      process.exitCode = 1;
+      return;
+    }
+    hold();
+    return;
+  }
   // Keep the pane alive as a static reference panel (herdr scrollback handles long
   // descriptions); close it with q, Ctrl-C, or the pane's own key binding. The glow path
   // holds the pane itself, once glow is done with the tty.
-  if (issue.error || !renderWithGlow(formatIssueMarkdown(issue), plain)) {
+  if (!renderWithGlow(formatIssueMarkdown(issue), plain)) {
     process.stdout.write(plain);
     hold();
   }

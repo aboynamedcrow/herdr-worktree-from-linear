@@ -159,7 +159,11 @@ extra CLI needed.
 
 Delivery never changes your layout. It does not split, swap, move, resize or
 close anything; it types one command into a slot that is already sitting at an
-idle shell prompt. Everything else is reported and left alone:
+idle shell prompt — the shell process itself in the foreground, with no job
+running under it. The viewer starts with an absolute node, script, config
+directory and checkout path, and with `NODE_OPTIONS` cleared, so neither the
+slot's `PATH` nor its environment can change which viewer runs or what it loads.
+Everything else is reported and left alone:
 
 - The tab or pane label is missing, renamed, or matches more than one tab or pane.
 - The layout has not finished being applied within `issueSlotSettleMs`.
@@ -171,14 +175,22 @@ In all of those the worktree is already open and its layout untouched; only the
 issue view is skipped, with a line saying why.
 
 Invoking the action again for the same issue focuses the viewer that is already
-there rather than restarting it, and never sends it input. That only happens when the pane's live
-foreground process and the metadata it published agree on both the issue and the
-invocation that started it — leftover metadata from a viewer that has since
-exited proves nothing on its own. A viewer showing a different issue counts as
-busy. `q` or `Ctrl-C` closes the viewer and hands the shell back.
+there rather than restarting it, and never sends it input. That only happens when
+the pane's live foreground process and the metadata it published agree on both
+the issue and the invocation that started it — leftover metadata from a viewer
+that has since exited proves nothing on its own. A viewer showing a different
+issue counts as busy. `q` or `Ctrl-C` closes the viewer and hands the shell back.
 
-If Linear cannot be reached, the viewer says so in the slot: the worktree and the
-layout that got you there are already correct, so nothing is rolled back.
+Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr
+pane focus` is directional — so it goes over `HERDR_SOCKET_PATH`, the same socket
+herdr's own plugins use, as a single bounded request with a deadline. Nothing is
+kept open and nothing is subscribed to.
+
+If Linear cannot be reached, the viewer prints why and returns the shell it was
+typed into, exiting non-zero like any other failed command — the worktree and the
+layout that got you there are already correct, so nothing is rolled back and the
+slot is not left parked on an error. (The older `[[panes]]` entrypoint has no
+shell to return to, so there the message stays on screen until you close it.)
 
 With `glow` installed the description and comments are rendered as markdown at
 the pane's width, and a resize re-renders to fit. Without it — or when the pane's

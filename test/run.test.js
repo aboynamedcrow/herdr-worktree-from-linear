@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../lib/run.js';
+import { VIEWER_SCRIPT } from '../lib/slot.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-1', title: 'Do it', branchName: 'tdi/bit-1-do-it', url: 'u', state: { name: 'Todo' }, assignee: { displayName: 'D' }, team: { key: 'BIT' } },
@@ -84,7 +86,7 @@ const IDLE_SHELL = { pane_id: SLOT, shell_pid: 42, foreground_process_group_id: 
 const BUSY_SHELL = { pane_id: SLOT, shell_pid: 42, foreground_process_group_id: 77, foreground_processes: [{ pid: 77, name: 'cat', argv0: 'cat', argv: ['cat'] }] };
 
 // git answers plus a herdr that owns a laid-out Crew tab with one Issue / Utility slot.
-function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL } = {}) {
+function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL, paneTokens = {} } = {}) {
   const calls = [];
   const exec = (cmd, args = []) => {
     calls.push([cmd, ...args]);
@@ -109,6 +111,12 @@ function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL } = {}) {
     if (args[0] === 'pane' && args[1] === 'process-info') {
       return { status: 0, stdout: JSON.stringify({ result: { type: 'pane_process_info', process_info: processInfo } }), stderr: '' };
     }
+    if (args[0] === 'pane' && args[1] === 'get') {
+      return { status: 0, stdout: JSON.stringify({ result: { type: 'pane_info', pane: {
+        pane_id: SLOT, tab_id: TAB, workspace_id: WS, terminal_id: 't2', focused: false,
+        agent_status: 'unknown', revision: 0, label: 'Issue / Utility', tokens: paneTokens,
+      } } }), stderr: '' };
+    }
     return { status: 0, stdout: '', stderr: '' };
   };
   return { exec, calls };
@@ -116,9 +124,12 @@ function slotExec({ worktreeExists = false, processInfo = IDLE_SHELL } = {}) {
 
 const paneRunOf = (calls) => calls.find((c) => c[1] === 'pane' && c[2] === 'run');
 
-async function runWithSlot(dir, { exec, select = async (list) => list[0], log = () => {} } = {}) {
+async function runWithSlot(dir, { exec, select = async (list) => list[0], log = () => {}, socketPath } = {}) {
   return run({
-    env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr', HERDR_PLUGIN_ID: 'tdi.worktree-from-linear' },
+    env: {
+      HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr',
+      HERDR_PLUGIN_ID: 'tdi.worktree-from-linear', HERDR_SOCKET_PATH: socketPath,
+    },
     exec,
     fetchFn: async () => ({ ok: true, status: 200, text: async () => SAMPLE }),
     select,
@@ -193,6 +204,48 @@ test('run does NOT touch the slot unless showIssueDetails is set', async () => {
   assert.equal(await runWithSlot(dir, { exec }), 0);
   assert.equal(calls.some((c) => c[1] === 'pane' || c[1] === 'tab'), false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// run() has to hand the socket herdr injected down to delivery: focusing an exact pane
+// has no CLI, so without it a repeat delivery could not focus anything.
+test('a repeat delivery focuses the live viewer over the socket herdr injected', async (t) => {
+  const dir = keyDir(SLOT_CONFIG);
+  const seen = [];
+  const socketDir = mkdtempSync(join(tmpdir(), 'wfl-run-sock-'));
+  const socketPath = join(socketDir, 's');
+  const server = createServer((conn) => {
+    let buffer = '';
+    conn.setEncoding('utf8');
+    conn.on('data', (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      const request = JSON.parse(buffer.slice(0, newline));
+      seen.push(request);
+      conn.write(`${JSON.stringify({ id: request.id, result: { type: 'pane_info', pane: { pane_id: request.params.pane_id } } })}\n`);
+    });
+    conn.on('error', () => {});
+  });
+  t.after(() => { server.close(); rmSync(socketDir, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); });
+  await new Promise((resolve) => server.listen(socketPath, resolve));
+
+  const viewer = {
+    pane_id: SLOT,
+    shell_pid: 42,
+    foreground_process_group_id: 900,
+    foreground_processes: [{
+      pid: 900,
+      name: 'node',
+      argv0: 'node',
+      argv: [process.execPath, VIEWER_SCRIPT, '--issue', 'BIT-1', '--invocation', 'inv7', '--config-dir', dir, '--cwd', '/wt/bit-1', '--pane', SLOT],
+    }],
+  };
+  const { exec, calls } = slotExec({ processInfo: viewer, paneTokens: { 'wfl-issue': 'BIT-1', 'wfl-invocation': 'inv7' } });
+  const logs = [];
+  assert.equal(await runWithSlot(dir, { exec, log: (m) => logs.push(m), socketPath }), 0);
+  assert.deepEqual(seen.map((r) => [r.method, r.params.pane_id]), [['pane.focus', SLOT]]);
+  assert.equal(paneRunOf(calls), undefined, 'the live viewer was sent no input');
+  assert.equal(logs.some((m) => /not delivered/.test(m)), false, logs.join(' | '));
 });
 
 test('cancelling changes nothing: no worktree, no inventory, no input', async () => {
