@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseViewerArgs } from '../bin/issue.js';
+import { PTY_WRAPPER, ptyAvailable } from './pty.mjs';
 
 // A stand-in for the herdr CLI that only records what it was asked to do. Every native
 // call any entrypoint can make goes through HERDR_BIN_PATH, so an empty log proves none do.
@@ -138,12 +139,6 @@ test('a missing workspace key fails visibly without naming another workspace key
 // Without a tty the pane's hold path is unobservable: stdin ends, the process falls off
 // the end of the event loop, and every exit looks the same. This runs the real entrypoint
 // under a real pty, so `hold()` actually holds.
-const PTY = 'import os, pty, sys; raise SystemExit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))';
-
-function ptyAvailable() {
-  return spawnSync('python3', ['-c', 'import pty, os'], { encoding: 'utf8' }).status === 0;
-}
-
 // hold() hides the cursor on the way in and shows it again on exit, so those escapes are
 // the observable difference between "held the pane" and "returned".
 const HIDE_CURSOR = '\x1b[?25l';
@@ -154,7 +149,7 @@ test('on a real terminal the issue pane holds, and q closes it', (t) => {
   const dir = configDir(t, TEAM_CONFIG);
   // A plugin pane has no shell behind it: exiting would close the pane and take the
   // message with it, so it holds until the user closes it.
-  const res = spawnSync('python3', ['-c', PTY, process.execPath, resolve('bin/issue.js'),
+  const res = spawnSync('python3', ['-c', PTY_WRAPPER, process.execPath, resolve('bin/issue.js'),
     '--issue', 'IC-72', '--config-dir', dir, '--cwd', '/repos/dot'], {
     input: 'q', timeout: 10000, encoding: 'utf8',
     env: { ...process.env, HERDR_BIN_PATH: stub.bin, KEY_IC: '', KEY_HSYS: '' },

@@ -298,7 +298,7 @@ test('a renderer that hangs is given up on, and never outlives the host', async 
   // pane could not be closed.
   const binDir = tempDir(t, 'wfl-e2e-bin-');
   const glowPid = join(binDir, 'glow.pid');
-  writeFileSync(join(binDir, 'glow'), `#!/bin/sh\necho $$ > ${JSON.stringify(glowPid)}\nexec sleep 300\n`);
+  writeFileSync(join(binDir, 'glow'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(glowPid)}, String(process.pid));\nprocess.on('SIGTERM', () => {});\nprocess.on('SIGHUP', () => {});\nsetInterval(() => {}, 1000);\n`);
   chmodSync(join(binDir, 'glow'), 0o755);
 
   const host = hostProcess(t, {
@@ -324,13 +324,15 @@ test('a renderer that hangs is given up on, and never outlives the host', async 
   // The hung renderer really did start, and really is still running.
   assert.ok(await until(() => existsSync(glowPid)), 'the fake glow was started');
   const renderer = Number(readFileSync(glowPid, 'utf8').trim());
+  t.after(() => { try { process.kill(renderer, 'SIGKILL'); } catch { /* already gone */ } });
   assert.doesNotThrow(() => process.kill(renderer, 0), 'precondition: it is hanging, not finished');
 
   // The render deadline passes: the plain panel is printed instead and the terminal comes
   // back, so the issue is on screen and the pane is usable again.
   assert.ok(await until(() => /Rendered by a hung renderer/.test(host.out()), 20000), host.out());
 
-  // And q closes the host, exactly as it would after a normal render.
+  // Quit during the kill grace while this renderer ignores SIGTERM. It must
+  // remain owned even though fallback presentation has already completed.
   host.quit();
   const exit = await host.exit;
   assert.deepEqual(exit, { code: 0, signal: null }, host.out() + host.err());
