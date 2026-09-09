@@ -1,87 +1,79 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { worktreeExistsForBranch, localBranchExists, buildWorktreeArgs, createOrOpenWorktree } from '../lib/worktree.js';
+import { symlinkSync, unlinkSync } from 'node:fs';
+import { discoverPlus, planIssueWorktree, applyIssueWorktree, readWorktreePlan } from '../lib/worktree.js';
+import { plusFixture } from './support/plus-fixture.js';
 
-const PORCELAIN = 'worktree /repo\nbranch refs/heads/main\n\nworktree /wt/x\nbranch refs/heads/tdi/bit-9\n';
-
-test('worktreeExistsForBranch matches whole branch line', () => {
-  assert.equal(worktreeExistsForBranch(PORCELAIN, 'tdi/bit-9'), true);
-  assert.equal(worktreeExistsForBranch(PORCELAIN, 'tdi/bit-99'), false);
-});
-
-test('localBranchExists reflects rev-parse status', () => {
-  assert.equal(localBranchExists('/repo', 'b', () => ({ status: 0, stdout: '', stderr: '' })), true);
-  assert.equal(localBranchExists('/repo', 'b', () => ({ status: 1, stdout: '', stderr: '' })), false);
-});
-
-test('buildWorktreeArgs adds --base only on create', () => {
-  assert.deepEqual(buildWorktreeArgs(false, '/repo', 'b', 'origin/main'), ['worktree', 'create', '--cwd', '/repo', '--branch', 'b', '--base', 'origin/main', '--focus', '--json']);
-  assert.deepEqual(buildWorktreeArgs(true, '/repo', 'b', 'origin/main'), ['worktree', 'open', '--cwd', '/repo', '--branch', 'b', '--focus', '--json']);
-});
-
-test('createOrOpenWorktree fetches base then creates when nothing exists', () => {
+const issue = { identifier: 'BIT-1', title: 'Do it', branchName: 'unrelated/provider-name' };
+function setup(t, override = () => null) {
+  const f = plusFixture();
+  t.after(() => f.close());
   const calls = [];
-  const exec = (cmd, args) => {
-    calls.push([cmd, ...args]);
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\nbranch refs/heads/main\n', stderr: '' };
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 1, stdout: '', stderr: '' };
-    return { status: 0, stdout: '{}', stderr: '' };
+  const exec = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return override(cmd, args, opts) || f.reply(cmd, args, opts);
   };
-  const res = createOrOpenWorktree('/repo', 'tdi/bit-1', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
-  assert.equal(res.exists, false);
-  assert.ok(calls.some((c) => c[0] === 'git' && c.includes('fetch') && c.includes('main')));
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-1', '--base', 'origin/main', '--focus', '--json']);
+  return { ...f, calls, exec };
+}
+
+test('shared backend uses its registered executable and its own configuration', (t) => {
+  const f = setup(t);
+  const planned = planIssueWorktree('/repo', issue, { env: { HERDR_PLUGIN_CONFIG_DIR: '/linear-config' }, exec: f.exec });
+  const result = applyIssueWorktree(planned, planned.plan.candidates[0], f.exec);
+  assert.equal(result.branchName, 'ingwon/bit-1-do-it');
+  assert.equal(result.exists, false);
+  const [plan, apply] = f.calls.filter((c) => c.cmd === f.binary);
+  assert.equal(plan.opts.env.HERDR_PLUGIN_CONFIG_DIR, '/plus-config');
+  assert.deepEqual(plan.args, ['plan-worktree', '--cwd', '/repo', '--name', 'Do it', '--issue', 'BIT-1']);
+  assert.deepEqual(apply.args.slice(-4), ['--candidate', 'b'.repeat(64), '--fingerprint', 'a'.repeat(64)]);
+  assert.ok(f.calls.every((c) => c.opts.timeout > 0));
+  assert.equal(f.calls.some((c) => c.cmd === 'git' || c.args[0] === 'worktree'), false);
 });
 
-test('createOrOpenWorktree skips fetch when base needsFetch is false (head)', () => {
-  const calls = [];
-  const exec = (cmd, args) => {
-    calls.push([cmd, ...args]);
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\n', stderr: '' };
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 1, stdout: '', stderr: '' };
-    return { status: 0, stdout: '{}', stderr: '' };
-  };
-  const res = createOrOpenWorktree('/repo', 'tdi/bit-2', { baseRef: 'HEAD', needsFetch: false, baseBranch: null }, exec, 'herdr');
-  assert.equal(calls.some((c) => c.includes('fetch')), false);
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-2', '--base', 'HEAD', '--focus', '--json']);
+test('disabled, missing and ambiguous backend inventories refuse before planning', (t) => {
+  const f = setup(t);
+  for (const plugins of [[], [{ plugin_id: 'cloudmanic.herdr-plus', enabled: false, plugin_root: f.root }], [1, 2]]) {
+    assert.throws(() => discoverPlus({}, () => ({ status: 0, stdout: JSON.stringify({ result: { plugins } }) })), /install and enable/);
+  }
 });
 
-test('createOrOpenWorktree opens without fetching when the worktree exists', () => {
-  const calls = [];
-  const exec = (cmd, args) => {
-    calls.push([cmd, ...args]);
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\nbranch refs/heads/main\n\nworktree /wt/x\nbranch refs/heads/tdi/bit-3\n', stderr: '' };
-    return { status: 0, stdout: '{}', stderr: '' };
-  };
-  const res = createOrOpenWorktree('/repo', 'tdi/bit-3', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
-  assert.equal(res.exists, true);
-  assert.equal(calls.some((c) => c.includes('fetch')), false);
-  assert.deepEqual(res.args, ['worktree', 'open', '--cwd', '/repo', '--branch', 'tdi/bit-3', '--focus', '--json']);
+test('registered executable cannot escape plugin root through a symlink', (t) => {
+  const f = setup(t);
+  unlinkSync(f.binary);
+  symlinkSync(process.execPath, f.binary);
+  assert.throws(() => discoverPlus({}, f.exec), /outside its plugin/);
 });
 
-test('createOrOpenWorktree creates without fetching when the local branch exists but no worktree', () => {
-  // Verified live: `herdr worktree create --branch <existing-local>` checks out the
-  // existing branch (base ignored), so no fetch is needed and we must NOT try to open
-  // (open errors when no worktree exists for the branch).
-  const calls = [];
-  const exec = (cmd, args) => {
-    calls.push([cmd, ...args]);
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\nbranch refs/heads/main\n', stderr: '' };
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 0, stdout: '', stderr: '' }; // local branch exists
-    return { status: 0, stdout: '{}', stderr: '' };
-  };
-  const res = createOrOpenWorktree('/repo', 'tdi/bit-4', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr');
-  assert.equal(res.exists, false); // no worktree existed → this is a create
-  assert.equal(calls.some((c) => c.includes('fetch')), false); // branch already local → no fetch
-  assert.deepEqual(res.args, ['worktree', 'create', '--cwd', '/repo', '--branch', 'tdi/bit-4', '--base', 'origin/main', '--focus', '--json']);
+test('malformed or ambiguous choice ids are refused', (t) => {
+  const f = setup(t);
+  for (const plan of [{ ...f.plan, version: 2 }, { ...f.plan, fingerprint: '' },
+    { ...f.plan, candidates: [] }, { ...f.plan, candidates: [f.plan.candidates[0], f.plan.candidates[0]] },
+    { ...f.plan, candidates: [{ ...f.plan.candidates[0], path: 'relative' }] }]) {
+    assert.throws(() => readWorktreePlan(JSON.stringify(plan)), /plan|choice/);
+  }
 });
 
-test('createOrOpenWorktree throws when fetch fails', () => {
-  const exec = (cmd, args) => {
-    if (cmd === 'git' && args.includes('list')) return { status: 0, stdout: 'worktree /repo\n', stderr: '' };
-    if (cmd === 'git' && args.includes('rev-parse')) return { status: 1, stdout: '', stderr: '' };
-    if (cmd === 'git' && args.includes('fetch')) return { status: 1, stdout: '', stderr: 'no ref' };
-    return { status: 0, stdout: '', stderr: '' };
-  };
-  assert.throws(() => createOrOpenWorktree('/repo', 'b', { baseRef: 'origin/main', needsFetch: true, baseBranch: 'main' }, exec, 'herdr'), /git fetch failed: no ref/);
+test('unselected choice and stale apply never fall back to native creation or retry', (t) => {
+  const f = setup(t, (_cmd, args) => args[0] === 'apply-worktree' ? { status: 1, stderr: 'worktree plan changed; refresh' } : null);
+  const p = planIssueWorktree('/repo', issue, { env: {}, exec: f.exec });
+  assert.throws(() => applyIssueWorktree(p, { id: 'c'.repeat(64) }, f.exec), /select a choice/);
+  assert.equal(f.calls.some((c) => c.args[0] === 'apply-worktree'), false);
+  assert.throws(() => applyIssueWorktree(p, p.plan.candidates[0], f.exec), /plan changed/);
+  assert.equal(f.calls.filter((c) => c.args[0] === 'apply-worktree').length, 1);
+});
+
+test('apply validates checkout, branch and workspace attribution without retrying', (t) => {
+  const f = setup(t);
+  const p = planIssueWorktree('/repo', issue, { env: {}, exec: f.exec });
+  for (const change of [
+    (r) => { r.worktree.path = '/different'; },
+    (r) => { r.worktree.branch = 'different'; },
+    (r) => { r.root_pane = { workspace_id: 'wother' }; },
+    (r) => { delete r.workspace.workspace_id; },
+  ]) {
+    const reply = JSON.parse(f.output); change(reply.result);
+    let n = 0;
+    assert.throws(() => applyIssueWorktree(p, p.plan.candidates[0], () => { n++; return { status: 0, stdout: JSON.stringify(reply) }; }), /another checkout|different or incomplete/);
+    assert.equal(n, 1);
+  }
 });

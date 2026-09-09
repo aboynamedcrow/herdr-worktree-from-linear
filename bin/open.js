@@ -1,22 +1,12 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
-import { openPickerArgs, swapDirectionFor, parsePaneId, readPlacement, readPopupSize } from '../lib/pane.js';
-import { parseContextCwd } from '../lib/repo.js';
+import { openPicker, reportOpenFailure } from '../lib/open.js';
 
-const herdr = process.env.HERDR_BIN_PATH || 'herdr';
-const cwd = parseContextCwd(process.env.HERDR_PLUGIN_CONTEXT_JSON, process.env.PWD || process.cwd());
-const placement = readPlacement(process.env.HERDR_PLUGIN_CONFIG_DIR);
-const size = readPopupSize(process.env.HERDR_PLUGIN_CONFIG_DIR);
-
-const res = spawnSync(herdr, openPickerArgs(process.env.HERDR_PLUGIN_ID, cwd, placement, size), { encoding: 'utf8' });
-if (res.stdout) process.stdout.write(res.stdout);
-if (res.stderr) process.stderr.write(res.stderr);
-
-// left/top open as a right/down split, then swap the new pane into place.
-const swap = swapDirectionFor(placement);
-if (res.status === 0 && swap) {
-  const paneId = parsePaneId(res.stdout);
-  if (paneId) spawnSync(herdr, ['pane', 'swap', '--direction', swap, '--pane', paneId], { stdio: 'inherit' });
+try {
+  const result = openPicker();
+  if (result.stdout) process.stdout.write(result.stdout);
+  process.exitCode = 0;
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  reportOpenFailure(error);
+  process.exitCode = 1;
 }
-
-process.exit(res.status ?? 1);

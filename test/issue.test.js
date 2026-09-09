@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hold, renderWithGlow } from '../bin/issue.js';
+import { hold, renderWithGlow } from '../lib/viewer.js';
 
-// hold() runs again after every re-render. Wiring a listener pair per call would cross
+// hold() runs again after every re-render, in both entrypoints that render. Wiring a listener pair per call would cross
 // Node's 11-listener threshold and print MaxListenersExceededWarning to stderr — into the
 // rendered pane. stdin is not a tty under the test runner, which is also the no-tty path.
 test('hold does not accumulate listeners across re-renders', (t) => {
