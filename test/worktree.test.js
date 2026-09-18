@@ -77,3 +77,16 @@ test('apply validates checkout, branch and workspace attribution without retryin
     assert.equal(n, 1);
   }
 });
+
+test('lifecycle fields remain validated backend decisions', (t) => {
+  const f = setup(t);
+  const candidate = { ...f.plan.candidates[0], source: 'remote', action: 'restore remote branch',
+    pr_state: 'UNKNOWN', recommended: true, start_commit: 'f'.repeat(40) };
+  const plan = { ...f.plan, candidates: [candidate] };
+  assert.equal(readWorktreePlan(JSON.stringify(plan)).candidates[0].source, 'remote');
+  for (const change of [{ source: 'guess' }, { start_commit: 'main' }, { pr_state: 'DONE' },
+    { recommended: 'yes' }, { existing: true }, { action: '' }]) {
+    assert.throws(() => readWorktreePlan(JSON.stringify({ ...plan,
+      candidates: [{ ...candidate, ...change }] })), /lifecycle choice/);
+  }
+});

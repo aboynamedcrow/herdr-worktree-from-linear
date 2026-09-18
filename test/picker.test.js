@@ -41,3 +41,33 @@ test('worktree ambiguity requires an exact candidate and supports cancellation',
     assert.equal(chosen, expected);
   }
 });
+
+test('a sole lifecycle choice shows unknown states and supports cancellation', async () => {
+  const candidate = { id: 'a'.repeat(64), branch: 'legacy/ic-72', path: '/a', checkout: true,
+    existing: true, source: 'local', action: 'open checkout', pr_state: 'UNKNOWN',
+    recommended: true, start_commit: 'f'.repeat(40) };
+  let prompted = false;
+  const chosen = await selectWorktree([candidate], { remoteState: 'UNKNOWN', exec: (cmd, args, opts) => {
+    if (cmd === 'sh') return { status: 0 };
+    prompted = true;
+    assert.match(opts.input, /PR UNKNOWN/);
+    assert.match(opts.input, /remote UNKNOWN/);
+    assert.match(opts.input, /recommended/);
+    assert.match(opts.input, /ffffffffffff/);
+    return { status: 130, stdout: '' };
+  } });
+  assert.equal(prompted, true);
+  assert.equal(chosen, null);
+});
+
+test('remote restore choice retains the exact backend id', async () => {
+  const candidate = { id: 'a'.repeat(64), branch: 'legacy/ic-72', path: '/a', checkout: false,
+    existing: false, source: 'remote', action: 'restore remote branch', pr_state: 'CLOSED',
+    recommended: true, start_commit: 'f'.repeat(40) };
+  const chosen = await selectWorktree([candidate], { exec: (cmd, args, opts) => {
+    if (cmd === 'sh') return { status: 0 };
+    assert.match(opts.input, /restore remote branch · remote · PR CLOSED/);
+    return { status: 0, stdout: opts.input };
+  } });
+  assert.equal(chosen, candidate);
+});
