@@ -565,3 +565,92 @@ test('a fresh layout waits for host startup without sending input or an early re
   assert.equal(res.ok, true, res.error);
   assertReadOnly(calls);
 });
+
+test('recorded IDs survive display renames and refuse a moved issue pane', () => {
+  const binding = { tabId: TAB, paneId: SLOT };
+  const tabs = [tab({ label: 'Crew · IC-42' })];
+  const panes = [pane({ label: 'Renamed issue' })];
+  assert.deepEqual(selectSlot(tabs, panes, WS, '', '', binding), { ok: true, tabId: TAB, paneId: SLOT });
+  assert.equal(selectSlot(tabs, panes, WS, '', '', { ...binding, paneId: 'w9:p99' }).ok, false);
+  assert.equal(slotSettings({ issueSlotById: true }).ok, true);
+});
+
+
+test('ID delivery accepts renamed labels and rechecks the recorded binding', async () => {
+  const handlers = happy();
+  handlers['workspace get'] = JSON.stringify({ result: { workspace: { workspace_id: WS, tokens: { crew_crew_tab: TAB, crew_issue_pane: SLOT } } } });
+  handlers['tab list'] = tabsReply([tab({ label: 'Crew · BIT-1' })]);
+  handlers['pane list'] = panesReply([pane({ label: 'Issue · BIT-1' })]);
+  handlers['pane get'] = paneReply(pane({ label: 'Issue · BIT-1', tokens: hostTokens() }));
+  const fixture = fakeHerdr(handlers);
+  const result = await deliver({ exec: fixture.exec, config: { issueSlotById: true } });
+  assert.equal(result.ok, true);
+  assertReadOnly(fixture.calls);
+  handlers['workspace get'] = (n) => JSON.stringify({ result: { workspace: { workspace_id: WS, tokens: { crew_crew_tab: TAB, crew_issue_pane: n ? 'w9:p99' : SLOT } } } });
+  const changed = await deliver({ exec: fakeHerdr(handlers).exec, config: { issueSlotById: true } });
+  assert.equal(changed.ok, false);
+});
+
+
+test('ID mode retains explicit legacy labels only without any Crew metadata', async () => {
+  for (const tokens of [undefined, {}, { unrelated: 'value' }]) {
+    const handlers = { ...happy(), 'workspace get': JSON.stringify({ result: { workspace: { workspace_id: WS, tokens } } }) };
+    const { exec, calls } = fakeHerdr(handlers);
+    const result = await deliver({ exec, config: { ...CONFIG, issueSlotById: true } });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.action, 'accepted');
+    assertReadOnly(calls);
+  }
+});
+
+test('ID mode refuses partial or stale Crew metadata instead of legacy labels', async () => {
+  for (const tokens of [
+    { crew_crew_tab: TAB }, { crew_issue_pane: SLOT }, { crew_task: 'BIT-1' },
+    { crew_crew_tab: '', crew_issue_pane: '' },
+    { crew_crew_tab: TAB, crew_issue_pane: 'w9:p99' },
+    { crew_crew_tab: 'w9:t99', crew_issue_pane: SLOT },
+  ]) {
+    asked = [];
+    const { exec } = fakeHerdr({ ...happy(), 'workspace get': JSON.stringify({ result: { workspace: { workspace_id: WS, tokens } } }) });
+    const result = await deliver({ exec, config: { ...CONFIG, issueSlotById: true } });
+    assert.equal(result.ok, false, JSON.stringify(tokens));
+    assert.equal(asked.length, 0);
+  }
+});
+
+test('legacy fallback retains host label checks and refuses a binding mode change', async () => {
+  const workspace = (tokens) => JSON.stringify({ result: { workspace: { workspace_id: WS, tokens } } });
+  for (const overrides of [
+    { 'pane get': paneReply(pane({ label: 'Other', tokens: hostTokens() })) },
+    { 'workspace get': (n) => workspace(n ? { crew_crew_tab: TAB, crew_issue_pane: SLOT } : {}) },
+    { 'workspace get': (n) => workspace(n ? {} : { crew_crew_tab: TAB, crew_issue_pane: SLOT }) },
+  ]) {
+    asked = [];
+    const { exec } = fakeHerdr({ ...happy(), 'workspace get': workspace({}), ...overrides });
+    const result = await deliver({ exec, config: { ...CONFIG, issueSlotById: true } });
+    assert.equal(result.ok, false);
+    assert.equal(asked.length, 0);
+  }
+});
+
+
+test('legacy fallback refuses ambiguous labels and invalid workspace replies', async () => {
+  const workspace = JSON.stringify({ result: { workspace: { workspace_id: WS, tokens: {} } } });
+  for (const overrides of [
+    { 'tab list': tabsReply([tab(), tab({ tab_id: 'w9:t2' })]) },
+    { 'pane list': panesReply([pane(), pane({ pane_id: 'w9:p3' })]) },
+    { 'workspace get': '{"result":{"workspace":{"workspace_id":"w8","tokens":{}}}}' },
+    { 'workspace get': 'not json' },
+    { 'workspace get': '{"result":{"workspace":{"workspace_id":"w9","tokens":[]}}}' },
+  ]) {
+    asked = [];
+    const { exec } = fakeHerdr({ ...happy(), 'workspace get': workspace, ...overrides });
+    const result = await deliver({ exec, config: { ...CONFIG, issueSlotById: true } });
+    assert.equal(result.ok, false);
+    assert.equal(asked.length, 0);
+  }
+  const { exec } = fakeHerdr({ ...happy(), 'workspace get': workspace });
+  const result = await deliver({ exec, config: { issueSlotById: true, issueTabLabel: 'Crew' } });
+  assert.equal(result.ok, false);
+  assert.equal(asked.length, 0);
+});
