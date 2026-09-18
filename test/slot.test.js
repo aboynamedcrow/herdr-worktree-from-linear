@@ -565,3 +565,28 @@ test('a fresh layout waits for host startup without sending input or an early re
   assert.equal(res.ok, true, res.error);
   assertReadOnly(calls);
 });
+
+test('recorded IDs survive display renames and refuse a moved issue pane', () => {
+  const binding = { tabId: TAB, paneId: SLOT };
+  const tabs = [tab({ label: 'Crew · IC-42' })];
+  const panes = [pane({ label: 'Renamed issue' })];
+  assert.deepEqual(selectSlot(tabs, panes, WS, '', '', binding), { ok: true, tabId: TAB, paneId: SLOT });
+  assert.equal(selectSlot(tabs, panes, WS, '', '', { ...binding, paneId: 'w9:p99' }).ok, false);
+  assert.equal(slotSettings({ issueSlotById: true }).ok, true);
+});
+
+
+test('ID delivery accepts renamed labels and rechecks the recorded binding', async () => {
+  const handlers = happy();
+  handlers['workspace get'] = JSON.stringify({ result: { workspace: { workspace_id: WS, tokens: { crew_crew_tab: TAB, crew_issue_pane: SLOT } } } });
+  handlers['tab list'] = tabsReply([tab({ label: 'Crew · BIT-1' })]);
+  handlers['pane list'] = panesReply([pane({ label: 'Issue · BIT-1' })]);
+  handlers['pane get'] = paneReply(pane({ label: 'Issue · BIT-1', tokens: hostTokens() }));
+  const fixture = fakeHerdr(handlers);
+  const result = await deliver({ exec: fixture.exec, config: { issueSlotById: true } });
+  assert.equal(result.ok, true);
+  assertReadOnly(fixture.calls);
+  handlers['workspace get'] = (n) => JSON.stringify({ result: { workspace: { workspace_id: WS, tokens: { crew_crew_tab: TAB, crew_issue_pane: n ? 'w9:p99' : SLOT } } } });
+  const changed = await deliver({ exec: fakeHerdr(handlers).exec, config: { issueSlotById: true } });
+  assert.equal(changed.ok, false);
+});
