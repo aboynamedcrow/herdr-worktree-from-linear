@@ -1,6 +1,6 @@
 # Worktree from Linear — herdr plugin
 
-Pick an active Linear issue and open its worktree using Herdr Plus's shared project policy. Existing branches and registered checkout paths are preserved; multiple matches require an explicit choice. Issue details fill a configured pane in the resulting workspace.
+Pick an active Linear issue and open its worktree using Herdr Plus's shared project policy. Plus preserves existing branches and registered checkout paths. Multiple matches require an explicit choice. Issue details fill a configured pane in the resulting workspace.
 
 ## Install
 
@@ -13,8 +13,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
 - **Herdr 0.9.0 or newer** and enabled **Herdr Plus** with `plan-worktree` / `apply-worktree` support and configured `[[worktree.projects]]` policies. Open the project’s primary workspace before creating linked worktrees.
 
 - **`fzf`** — the fuzzy picker (`brew install fzf`). Required for the intended
-  overlay; without it a plain numbered prompt is used.
-- **`glow`** — optional (`brew install glow`); renders the issue view's markdown.
+  overlay. Without it, the picker uses a plain numbered prompt.
+- **`glow`** — optional (`brew install glow`). It renders the issue view's markdown.
   Without it the pane prints the same plain-text panel as before.
 - **A Linear personal API key for each workspace** — Linear → Settings →
   Security & access → API → create a personal key. Export each key under an
@@ -55,31 +55,31 @@ herdr plugin install tdi/herdr-worktree-from-linear
   when focused on a different checkout. An unmapped team fails explicitly. When
   no legacy inline `linearApiKey` is set, a missing selected environment key
   also fails rather than trying another workspace. Remove that legacy inline
-  key to enable per-team credential selection; otherwise it still overrides
+  key to enable per-team credential selection. Otherwise, it still overrides
   the selected environment key for mapped teams, for backward compatibility.
   This does not combine workspace issue lists in the worktree picker. Map every
   team whose issues can be selected: a third team may appear through the picker's
   repository route but its detail pane will refuse to load until that team is mapped.
 - `linearApiKeyEnvByPath` — optional ordered path rules for selecting an API
   key environment variable. The first rule whose `contains` substring appears
-  in the repository root wins; matching is case-insensitive.
+  in the repository root wins. Matching is case-insensitive.
 - `linearApiKeyEnvDefault` — the environment-variable name used when no path
   rule matches. This supports a small exception list with one common default.
 - `linearApiKey` — legacy key value. Existing configs remain supported and an
   explicit value still takes precedence, but new configs should keep key values
   out of `config.json` and use the environment-variable options above.
 - `issueLimit` — max issues listed (default 50).
-- `teamKey` — optional; restrict to one team (e.g. `BIT`).
-- `assignedToMe` — optional; when `true`, only list issues assigned to you (the
+- `teamKey` — optional. Restrict the list to one team (e.g. `BIT`).
+- `assignedToMe` — optional. When `true`, only list issues assigned to you (the
   API key's user). Default `false` (all assignees).
-- `includeTriage` — optional; when `true`, also list issues in the triage state
+- `includeTriage` — optional. When `true`, also list issues in the triage state
   (on top of the unstarted/started defaults). Default `false`.
 - `placement` — where the picker pane opens: `"right"` (default), `"left"`,
   `"top"`, `"down"` (splits, so your work stays visible), `"overlay"`
   (full-screen), or `"popup"` (centered floating window). `left`/`top` open a
   right/down split then swap into place.
 - `fzfLayout` — `"down"` (default, search bar at the bottom) or `"top"` (search bar at the top). The picker renders as a compact window either way.
-- `showIssueDetails` — optional; when `true`, opening a worktree also shows the
+- `showIssueDetails` — optional. When `true`, opening a worktree also shows the
   picked issue's details in a pane your layout already provides (see below).
   Default `false`, and it needs `issueTabLabel` and `issuePaneLabel`.
 - `issueTabLabel` / `issuePaneLabel` — the tab label, and the pane label inside
@@ -113,14 +113,14 @@ For multiple Linear workspaces, configure variable names rather than key values:
 ```
 
 With this example, any repository root containing `hsys` (in any letter case)
-reads `LINEAR_API_KEY_HSYS`; every other repository reads
+reads `LINEAR_API_KEY_HSYS`. Every other repository reads
 `LINEAR_API_KEY_EMBER`. Rules are checked in order and the first match wins.
-Only the variable names belong in `config.json`; export their key values into
+Only the variable names belong in `config.json`. Export their key values into
 the herdr server's inherited environment.
 
 For issue-detail views, also configure `linearApiKeyEnvByTeam` as in the complete
-example above. Identifier-based routing takes precedence over path inference;
-the picker (which has no selected identifier yet) keeps repository routing.
+example above. Identifier-based routing takes precedence over path inference.
+The picker (which has no selected identifier yet) keeps repository routing.
 No key values are copied between workspaces or persisted by this routing.
 
 When neither `linearApiKeyEnvByPath` nor `linearApiKeyEnvDefault` is configured,
@@ -142,12 +142,36 @@ pane layout. `overlay` also closes back to the original layout when the picker e
 
 Bind the `Worktree from Linear issue` action to a key (herdr `[[keys.command]]`,
 `type = "plugin_action"`, `command = "tdi.worktree-from-linear.pick"`), or invoke
-it from the action menu. It lists your team's active issues; pick one and herdr
-asks Plus to plan from that issue's identifier and title. A sole candidate is applied; multiple matching branches/checkouts show a second chooser. Cancelling either chooser creates nothing. The Linear-provided branch name is not a naming policy.
+it from the action menu. It lists your team's active issues. Pick one and herdr
+asks Plus to plan from that issue's identifier and title. The picker applies a sole candidate. Multiple matching branches/checkouts show a second chooser. Cancelling either chooser creates nothing. The Linear-provided branch name is not a naming policy.
 
-Plus owns branch prefix, name limits, checkout root, remote default/base, existing branch reuse and native worktree creation/opening. Configure those in Plus, including any project base override; this plugin's former `base` option is obsolete. A missing backend, missing project policy or changed plan fails visibly without a fallback creation path. Refresh and select again after a changed-plan refusal.
+Plus owns branch prefix, name limits, checkout root, remote default/base, existing branch reuse and native worktree creation/opening. Configure those in Plus, including any project base override. This plugin's former `base` option is obsolete. A missing backend, missing project policy or changed plan fails visibly without a fallback creation path. Refresh and select again after a changed-plan refusal.
 
-The action uses the original invoking pane and checkout, even if another client changes focus. Use `placement: "overlay"` or `"popup"` to preserve the surrounding layout while choosing. Noninteractive invocation requires explicit `HERDR_WFP_CWD`; the plugin's executable directory is never used as the target repository.
+The action uses the original invoking pane and checkout, even if another client changes focus. Use `placement: "overlay"` or `"popup"` to preserve the surrounding layout while choosing. Noninteractive invocation requires explicit `HERDR_WFP_CWD`. The plugin never uses its executable directory as the target repository.
+
+### Start an agent on a Linear issue
+
+Choose `Start agent on Linear issue` from the action menu.
+You can also bind `tdi.worktree-from-linear.start` with `type = "plugin_action"`.
+Select an issue in the same picker. Cancel to leave without a start.
+
+This action requires the dot command `task new` and its configured agent pool.
+The command defaults to `$HOME/dot/bin/task`. Set `TASK_BIN` to use another executable path.
+The picker calls `task new "<identifier> [M]"` from the invoking pane's context.
+The task command creates the worktree and Crew workspace. It then starts the supervised agent.
+The picker prints the command's result and sends a notification with the same message.
+A task failure prints its message and makes the picker exit with status 1.
+
+The size is always `[M]`. This picker has no size column or prefix key for `[S]` or `[L]`.
+Use `task new` directly to select another size.
+
+The picker removes all environment variables whose names start with `HERDR_PLUGIN_` or `HERDR_WFP_` before it calls the task.
+This prevents the task from using this plugin's paths for bootstrap preparation.
+The task inherits all other environment variables, including the socket path and named Linear keys.
+The picker sets `HERDR_ENV=1` and sets `HERDR_PANE_ID` to the original invoking pane.
+The task reads the Linear key by name. It inherits `TASK_LINEAR_KEY_ENV` when you set it.
+The picker adds no key value to command arguments.
+The `Worktree from Linear issue` action keeps its existing behavior.
 
 ### The issue slot
 
@@ -191,13 +215,13 @@ anything. Everything else is reported and left alone:
 - The host already has a different issue on screen: it says so and keeps what you are
   reading.
 
-In all of those the worktree is already open and its layout untouched; only the issue view
-is skipped, with a log line and bounded native notification saying why.
+In all of those cases, the worktree stays open with its layout untouched.
+The plugin skips the issue view. A log line and bounded native notification say why.
 
 Invoking the action again for the same issue focuses the host that already has it rather
 than restarting anything, and never sends it a second fetch. That only happens when the
 pane's live foreground process is the host, the metadata it published names that same live
-process, and the host itself confirms the issue over its socket — leftover metadata from a
+process, and the host itself checks the issue over its socket — leftover metadata from a
 host that has since exited proves nothing on its own.
 
 #### How the picker reaches the host
@@ -206,10 +230,10 @@ The host creates a unix socket in a directory it makes for itself (mode `0700`, 
 mode `0600`, both removed on the way out) and publishes the path, its pid, a random
 instance token and a digest of its checkout as metadata on its own pane. The picker reads
 those, checks them against the live foreground process, and sends one bounded request over
-that socket. A request carries a known operation and a validated issue identifier —
-never a command, a script or an environment — and the host validates every field of it
+that socket. A request carries a known operation and a checked issue identifier —
+never a command, a script or an environment — and the host checks every field of it
 against itself before acting. It is local same-user IPC, not a network endpoint, and not a
-daemon: the host dies with its pane. Socket paths must fit native metadata’s 80-byte bound; the host uses a short random directory and basename, and refuses an overlong custom runtime path with instructions to shorten `TMPDIR` or `XDG_RUNTIME_DIR`.
+daemon: the host dies with its pane. Socket paths must fit native metadata’s 80-byte bound. The host uses a short random directory and basename. It refuses an overlong custom runtime path with instructions to shorten `TMPDIR` or `XDG_RUNTIME_DIR`.
 
 Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr pane focus`
 is directional — so that goes over `HERDR_SOCKET_PATH`, the same socket herdr's own plugins
@@ -218,8 +242,7 @@ subscribed to.
 
 If Linear cannot be reached, the host prints why, exits non-zero and gives the pane back to
 your shell — the worktree and the layout that got you there are already correct, so nothing
-is rolled back. Starting the host again is up to you; the plugin will not restart it,
-because that would mean typing into the shell it just handed back.
+is rolled back. Start the host again yourself. The plugin cannot restart it without typing into your shell.
 
 With `glow` installed the description and comments are rendered as markdown at the pane's
 width, and a resize re-renders to fit. Without it — or when the pane's output is not a
@@ -242,4 +265,4 @@ npm test
 
 ### Show an issue from a project action
 
-A project action can run `node <plugin-dir>/bin/show.js --workspace WORKSPACE_ID --issue IC-72` with this plugin's `HERDR_PLUGIN_CONFIG_DIR`. The explicit workspace must carry native checkout provenance. It uses the same configured host delivery and reports failure visibly; it does not create a pane or type a command into one.
+A project action can run `node <plugin-dir>/bin/show.js --workspace WORKSPACE_ID --issue IC-72` with this plugin's `HERDR_PLUGIN_CONFIG_DIR`. The explicit workspace must carry native checkout provenance. It uses the same configured host delivery and reports failure visibly. It does not create a pane or type a command into one.
