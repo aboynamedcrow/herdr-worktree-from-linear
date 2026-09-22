@@ -10,6 +10,7 @@ const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'IC-220', title: 'Start agent', state: { name: 'Todo' } },
 ] } } });
 const MESSAGE = 'task new: IC-220 /worktree w2 w2:p1 test-account';
+const STARTING = 'Starting IC-220 through task new. This can take minutes.';
 
 // Run both CLI entry points. Herdr, Git, fzf, task, and Linear are fake.
 function fixture(t, extraEnv = {}) {
@@ -26,8 +27,10 @@ const args = process.argv.slice(2);
 const command = basename(process.argv[1]);
 const env = process.env;
 const context = { HERDR_ENV: env.HERDR_ENV, HERDR_PANE_ID: env.HERDR_PANE_ID,
+  HERDR_BIN_PATH: env.HERDR_BIN_PATH,
   HERDR_SOCKET_PATH: env.HERDR_SOCKET_PATH, TASK_LINEAR_KEY_ENV: env.TASK_LINEAR_KEY_ENV,
-  LINEAR_API_KEY: env.LINEAR_API_KEY, KEEP_ME: env.KEEP_ME };
+  LINEAR_API_KEY: env.LINEAR_API_KEY, KEEP_ME: env.KEEP_ME,
+  pickerVariables: Object.keys(env).filter((name) => name.startsWith('HERDR_PLUGIN_') || name.startsWith('HERDR_WFP_')) };
 appendFileSync(env.CALLS, JSON.stringify({ command, args, context }) + '\\n');
 if (command === 'herdr') {
   if (args[0] === 'pane' && args[1] === 'get') {
@@ -56,6 +59,8 @@ else if (command === 'fzf') {
   const env = {
     PATH: `${bin}:/usr/bin:/bin`, HOME: dir, CALLS: join(dir, 'calls.jsonl'),
     HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_BIN_PATH: join(bin, 'herdr'),
+    HERDR_PLUGIN_ROOT: dir, HERDR_PLUGIN_STATE_DIR: join(dir, 'state'),
+    HERDR_PLUGIN_FUTURE: 'remove', HERDR_WFP_FUTURE: 'remove',
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', focused_pane_id: 'w1:p1', focused_pane_cwd: dir }),
     HERDR_PANE_ID: 'w1:p99', HERDR_SOCKET_PATH: '/fake/herdr.sock',
     LINEAR_API_KEY: 'synthetic-key', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY', KEEP_ME: 'preserved',
@@ -96,14 +101,15 @@ test('start action opens the picker and starts M from the invoking pane', (t) =>
     const f = fixture(t, defaultTask ? { TASK_BIN: '' } : {});
     const result = f.picker();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, `${MESSAGE}\n`);
+    assert.equal(result.stdout, `${STARTING}\n${MESSAGE}\n`);
     const calls = f.calls();
     const tasks = calls.filter((call) => call.command === 'task');
     assert.equal(tasks.length, 1);
     assert.deepEqual(tasks[0].args, ['new', 'IC-220 [M]']);
     assert.deepEqual(tasks[0].context, { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: f.env.HERDR_BIN_PATH,
       HERDR_SOCKET_PATH: '/fake/herdr.sock', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY',
-      LINEAR_API_KEY: 'synthetic-key', KEEP_ME: 'preserved' });
+      LINEAR_API_KEY: 'synthetic-key', KEEP_ME: 'preserved', pickerVariables: [] });
     assert.deepEqual(calls.filter((call) => call.command === 'herdr').map((call) => call.args.slice(0, 2)),
       [['pane', 'get'], ['plugin', 'pane'], ['notification', 'show']]);
     assert.ok(calls.some((call) => call.args.includes('--body') && call.args.includes(MESSAGE)));
@@ -116,6 +122,7 @@ test('start cancellation runs no task or worktree command', (t) => {
   const result = f.picker();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /cancelled/);
+  assert.equal(result.stdout.includes(STARTING), false);
   assert.deepEqual(f.calls().slice(before).map((call) => call.command), ['git', 'fzf']);
 });
 
@@ -123,14 +130,18 @@ test('task exit 2 prints its message, notifies, and makes the picker exit 1', (t
   const f = fixture(t, { TASK_STATUS: '2' });
   const result = f.picker();
   assert.equal(result.status, 1, result.stderr);
-  assert.equal(result.stdout, 'task new: refused: no room\n');
+  assert.equal(result.stdout, `${STARTING}\ntask new: refused: no room\n`);
   assert.ok(f.calls().some((call) => call.args.includes('task new: refused: no room')));
   assert.equal(f.calls().filter((call) => call.command === 'task').length, 1);
 });
 
-test('direct start mode reads the pane from context and preserves stdout failures', async () => {
+test('start strips picker variables, allows bootstrap time, and preserves stdout failures', async () => {
   const env = { HERDR_WFP_MODE: 'start', HERDR_WFP_CWD: '/repo', HOME: '/home/test',
-    LINEAR_API_KEY: 'synthetic-key', HERDR_PLUGIN_CONTEXT_JSON: '{"focused_pane_id":"w1:p1"}' };
+    HERDR_WFP_START_PANE: 'w1:p1', HERDR_WFP_FUTURE: 'remove',
+    HERDR_PLUGIN_ROOT: '/picker', HERDR_PLUGIN_STATE_DIR: '/picker-state', HERDR_PLUGIN_FUTURE: 'remove',
+    HERDR_SOCKET_PATH: '/socket', HERDR_BIN_PATH: 'herdr', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY',
+    KEEP_ME: 'preserved', HERDR_PLUGIN: 'preserved', HERDR_WFP: 'preserved',
+    LINEAR_API_KEY: 'synthetic-key', HERDR_PLUGIN_CONTEXT_JSON: '{"focused_pane_id":"w1:p9"}' };
   const logs = [];
   const code = await run({ env, select: async (issues) => issues[0],
     selectWorktree: () => assert.fail('no worktree choice'), log: (m) => logs.push(m),
@@ -139,11 +150,33 @@ test('direct start mode reads the pane from context and preserves stdout failure
       if (cmd === 'git') return { status: 0, stdout: '/repo\n' };
       if (cmd === 'herdr') { assert.equal(args[0], 'notification'); return { status: 0 }; }
       assert.equal(cmd, '/home/test/dot/bin/task');
-      assert.equal(opts.env.HERDR_PANE_ID, 'w1:p1');
-      assert.ok(opts.timeout > 0);
+      assert.deepEqual(logs, [STARTING], 'progress must print before task starts');
+      assert.deepEqual(opts.env, { HOME: '/home/test', HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1',
+        HERDR_SOCKET_PATH: '/socket', HERDR_BIN_PATH: 'herdr', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY',
+        KEEP_ME: 'preserved', HERDR_PLUGIN: 'preserved', HERDR_WFP: 'preserved', LINEAR_API_KEY: 'synthetic-key' });
+      assert.equal(opts.timeout, 3000000);
       return { status: 2, stdout: 'task new: refused: no room\n', stderr: '' };
     },
   });
   assert.equal(code, 1);
-  assert.deepEqual(logs, ['task new: refused: no room']);
+  assert.deepEqual(logs, [STARTING, 'task new: refused: no room']);
+});
+
+test('start refuses a missing captured pane despite the picker context', async () => {
+  for (const paneId of [undefined, '', ' ']) {
+    const logs = [];
+    await assert.rejects(run({
+      env: { HERDR_WFP_MODE: 'start', HERDR_WFP_CWD: '/repo', HERDR_WFP_START_PANE: paneId,
+        LINEAR_API_KEY: 'synthetic-key', HERDR_PANE_ID: 'w1:p9',
+        HERDR_PLUGIN_CONTEXT_JSON: '{"focused_pane_id":"w1:p9"}' },
+      select: async (issues) => issues[0], log: (message) => logs.push(message),
+      fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+      exec: (cmd, args) => {
+        assert.equal(cmd, 'git', 'no task or worktree command may run');
+        assert.deepEqual(args, ['-C', '/repo', 'rev-parse', '--show-toplevel']);
+        return { status: 0, stdout: '/repo\n' };
+      },
+    }), /start requires the invoking pane context/);
+    assert.deepEqual(logs, []);
+  }
 });
