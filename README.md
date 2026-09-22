@@ -165,7 +165,9 @@ A task failure prints its message and makes the picker exit with status 1.
 The size is always `[M]`. This picker has no size column or prefix key for `[S]` or `[L]`.
 Use `task new` directly to select another size.
 
-The task inherits the socket and other environment variables.
+The picker removes all environment variables whose names start with `HERDR_PLUGIN_` or `HERDR_WFP_` before it calls the task.
+This prevents the task from using this plugin's paths for bootstrap preparation.
+The task inherits all other environment variables, including the socket path and named Linear keys.
 The picker sets `HERDR_ENV=1` and sets `HERDR_PANE_ID` to the original invoking pane.
 The task reads the Linear key by name. It inherits `TASK_LINEAR_KEY_ENV` when you set it.
 The picker adds no key value to command arguments.
