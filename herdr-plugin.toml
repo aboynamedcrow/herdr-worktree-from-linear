@@ -11,6 +11,12 @@ title = "Worktree from Linear issue"
 contexts = ["workspace", "tab", "pane"]
 command = ["node", "bin/open.js"]
 
+[[actions]]
+id = "start"
+title = "Start agent on Linear issue"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "bin/open.js", "--start"]
+
 [[panes]]
 id = "picker"
 title = "Pick a Linear issue"

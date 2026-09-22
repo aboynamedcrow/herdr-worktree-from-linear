@@ -39,6 +39,7 @@ test('the picker proves the original pane and preserves plugin executable cwd', 
   assert.ok(opened.args.includes(`HERDR_WFP_CWD=${f.dir}`));
   assert.equal(opened.args.includes('--cwd'), false);
   assert.equal(opened.args.includes('split'), false);
+  assert.equal(opened.args.includes('HERDR_WFP_MODE=start'), false);
   assert.ok(calls.every((c) => c.opts.timeout > 0));
 });
 
