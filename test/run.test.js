@@ -272,7 +272,7 @@ test('run does NOT touch the slot unless showIssueDetails is set', async () => {
 
 // run() has to hand the socket herdr injected down to delivery: focusing an exact pane
 // has no CLI, so without it a repeat delivery could not focus anything.
-test('a repeat delivery focuses the live host over the socket herdr injected', async (t) => {
+test('a repeat delivery leaves the current pane focused', async (t) => {
   const dir = keyDir(SLOT_CONFIG);
   const host = await hostServer(t, 'showing');
   const seen = [];
@@ -297,8 +297,8 @@ test('a repeat delivery focuses the live host over the socket herdr injected', a
   const { exec, calls } = slotExec({ paneTokens: hostTokens(host.socketPath) });
   const logs = [];
   assert.equal(await runWithSlot(dir, { exec, log: (m) => logs.push(m), socketPath }), 0);
-  assert.deepEqual(seen.map((r) => [r.method, r.params.pane_id]), [['pane.focus', SLOT]]);
-  assert.equal(host.seen.length, 1, 'the host confirmed it before anything focused');
+  assert.deepEqual(seen, []);
+  assert.equal(host.seen.length, 1, 'the host confirmed it is showing the issue');
   assertReadOnly(calls);
   assert.equal(logs.some((m) => /not delivered/.test(m)), false, logs.join(' | '));
 });

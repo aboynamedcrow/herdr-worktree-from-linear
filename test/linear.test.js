@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, fetchIssue, threadComments } from '../lib/linear.js';
+import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, fetchIssue, fetchIssueBatch, threadComments } from '../lib/linear.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', state: { name: 'In Progress' }, assignee: { displayName: 'Darek' }, team: { key: 'BIT' } },
@@ -139,4 +139,23 @@ test('fetchIssue throws on a bad identifier or a missing issue', async () => {
   await assert.rejects(() => fetchIssue({ linearApiKey: 'k' }, 'bad', never), /bad issue identifier/);
   const empty = async () => ({ ok: true, status: 200, text: async () => '{"data":{"issues":{"nodes":[]}}}' });
   await assert.rejects(() => fetchIssue({ linearApiKey: 'k' }, 'BIT-999', empty), /not found/);
+});
+
+test('a batch fetch uses one request for every ID and includes state type and name', async () => {
+  const ids = ['IC-1', 'HSYS-2', 'IC-3', 'IC-4'];
+  const query = buildIssueBatchBody(ids).query;
+  assert.equal((query.match(/issues\(first: 1/g) || []).length, 4);
+  assert.match(query, /state \{ type name \}/);
+  assert.throws(() => buildIssueBatchBody(['IC-0']), /invalid issue list identifier/);
+  let requests = 0;
+  const issues = await fetchIssueBatch({ linearApiKey: 'synthetic' }, ids, async (_url, options) => {
+    requests += 1;
+    assert.equal(options.headers.Authorization, 'synthetic');
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: Object.fromEntries(ids.map((id, index) => [
+      `i${index}`, { nodes: [{ identifier: id, title: id, state: { type: 'started', name: 'In Progress' } }] },
+    ])) }) };
+  });
+  assert.equal(requests, 1);
+  assert.equal(issues.size, 4);
+  assert.deepEqual([issues.get('HSYS-2').stateType, issues.get('HSYS-2').stateName], ['started', 'In Progress']);
 });

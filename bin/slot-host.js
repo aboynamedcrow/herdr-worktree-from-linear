@@ -12,9 +12,12 @@
 // exists to avoid.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { formatIssue } from '../lib/render.js';
+import { formatIssue, formatIssueList } from '../lib/render.js';
 import { hold, showIssue, CLEAR } from '../lib/viewer.js';
-import { publishHost, resolveHostContext, startHost, unpublishHost } from '../lib/host.js';
+import { publishHost, resolveHostContext, spawnSyncExec, startHost, unpublishHost } from '../lib/host.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { listKeyAction, openInLinear } from '../lib/list-keys.js';
 
 const USAGE = 'usage: node bin/slot-host.js --pane PANE_ID --config-dir DIR [--cwd CHECKOUT]';
 
@@ -48,6 +51,28 @@ export async function main({
     return 2;
   }
   const herdrBin = env.HERDR_BIN_PATH || 'herdr';
+  let baseLabel = 'Issue / Utility';
+  try {
+    const configured = JSON.parse(readFileSync(join(context.configDir, 'config.json'), 'utf8'));
+    if (typeof configured.issuePaneLabel === 'string' && configured.issuePaneLabel) baseLabel = configured.issuePaneLabel;
+  } catch { /* keep the Crew label */ }
+  let host;
+  let full = false;
+  let shownIssue = null;
+  let stopFullRender = null;
+  let labelId = null;
+  const render = (view) => {
+    if (view.selected !== labelId) {
+      labelId = view.selected;
+      const label = `${baseLabel}${labelId ? ` · ${labelId}` : ''}`;
+      spawnSyncExec(herdrBin, ['pane', 'rename', context.paneId, label], { timeout: 5000 });
+    }
+    if (full) return;
+    process.stdout.write(CLEAR);
+    process.stdout.write(view.ids.length || view.override
+      ? formatIssueList(view, process.stdout.columns || 80)
+      : `${ready(context.checkout).slice(CLEAR.length)}${view.error ? `${view.error}\n` : ''}`);
+  };
 
   const started = await startHost({
     paneId: context.paneId,
@@ -55,9 +80,8 @@ export async function main({
     checkout: context.checkout,
     // Rendering happens in this process, from an issue this process fetched. A request
     // asked for an identifier; it did not supply anything to run.
-    onShow: (issue) => showIssue(issue),
-    // A failed fetch is the host's failure, not the worktree's: say why, give the pane
-    // back to the shell that started this, and exit non-zero like any other command.
+    onListUpdate: render,
+    // The one-issue host uses this failure path. List mode keeps its last good data.
     onFail: (identifier, reason) => {
       process.stdout.write(CLEAR);
       process.stdout.write(formatIssue({ identifier, error: reason }));
@@ -68,7 +92,7 @@ export async function main({
     process.stderr.write(`${started.error}\n`);
     return 1;
   }
-  const { host } = started;
+  ({ host } = started);
   // Both halves are bounded and neither can throw.
   install(() => {
     unpublishHost(host, { herdrBin });
@@ -86,7 +110,37 @@ export async function main({
   }
 
   process.stdout.write(ready(host.checkout));
-  hold();
+  const onKey = (key) => {
+    const action = listKeyAction(key);
+    if (full) {
+      if (action === 'full' || key === 0x1b) {
+        full = false;
+        shownIssue = null;
+        stopFullRender?.();
+        stopFullRender = null;
+        render(host.view());
+      } else if (action === 'open') openInLinear(shownIssue);
+      return;
+    }
+    if (action === 'next') host.select(1);
+    if (action === 'previous') host.select(-1);
+    if (action === 'full') {
+      const view = host.view();
+      const issue = view?.issues.get(view.selected);
+      if (issue) {
+        full = true;
+        shownIssue = issue;
+        process.stdout.write(CLEAR);
+        stopFullRender = showIssue(issue, { onKey });
+      }
+    }
+    if (action === 'open') {
+      const view = host.view();
+      openInLinear(view?.issues.get(view.selected));
+    }
+  };
+  hold(onKey);
+  host.startList();
   return 0;
 }
 

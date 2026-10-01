@@ -227,6 +227,19 @@ test('selectSlot demands exactly one labeled tab and one labeled pane inside it'
   assert.match(selectSlot(null, panes, WS, 'Crew', 'Issue / Utility').error, /no tabs/);
 });
 
+test('delivery finds the host after it names the selected issue', async () => {
+  const named = pane({ label: 'Issue / Utility · BIT-1', tokens: hostTokens() });
+  const { exec } = fakeHerdr({
+    ...happy(),
+    'pane list': panesReply([pane({ pane_id: 'w9:p1', label: 'Orchestrator' }), named]),
+    'pane get': paneReply(named),
+  });
+  const result = await deliver({ exec });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(selectSlot([tab()], [pane({ label: 'Issue / Utility · bad' })], WS,
+    'Crew', 'Issue / Utility').ok, false);
+});
+
 test('delivery refuses incomplete or conflicting scoped inventories before touching the slot', async () => {
   for (const [label, panes] of [
     ['a duplicate pane id', [pane(), pane()]],
@@ -306,7 +319,7 @@ test('delivery hands the issue to the live host and types nothing anywhere', asy
   assert.equal(calls.some((c) => c.includes('--current')), false);
 });
 
-test('a repeat delivery focuses the host that already holds this issue', async () => {
+test('a repeat delivery leaves focus on the other pane', async () => {
   const { exec, calls } = fakeHerdr(happy());
   const res = await deliver({
     exec,
@@ -315,16 +328,14 @@ test('a repeat delivery focuses the host that already holds this issue', async (
       return { ok: true, status: 'showing', issue: request.issue, detail: 'showing' };
     },
   });
-  assert.deepEqual(res, { ok: true, action: 'focused', paneId: SLOT, issue: 'BIT-1', host: HOST_ID });
-  assert.deepEqual(focused, [SLOT]);
+  assert.deepEqual(res, { ok: true, action: 'showing', paneId: SLOT, issue: 'BIT-1', host: HOST_ID });
+  assert.deepEqual(focused, []);
   assertReadOnly(calls);
-  // Focus moves the user, so ownership is proved again after the host confirms: three
-  // process-info reads, three metadata reads, and only then a focus.
-  assert.equal(calls.filter((c) => c[2] === 'process-info').length, 3);
-  assert.equal(calls.filter((c) => c[2] === 'get').length, 3);
+  assert.equal(calls.filter((c) => c[2] === 'process-info').length, 2);
+  assert.equal(calls.filter((c) => c[2] === 'get').length, 2);
 });
 
-test('a host that has gone between the confirmation and the focus is not focused', async () => {
+test('a repeat delivery makes no focus call', async () => {
   const { exec, calls } = fakeHerdr({
     ...happy(),
     // The third look — the one taken immediately before focusing — finds a shell.
@@ -334,8 +345,7 @@ test('a host that has gone between the confirmation and the focus is not focused
     exec,
     ask: async () => ({ ok: true, status: 'showing', issue: 'BIT-1', detail: 'showing' }),
   });
-  assert.equal(res.ok, false);
-  assert.match(res.error, /not running the issue host/);
+  assert.equal(res.ok, true);
   assert.deepEqual(focused, [], 'nothing moved the user');
   assertReadOnly(calls);
 });
