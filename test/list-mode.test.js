@@ -13,21 +13,51 @@ function gitReader(values = {}) {
     calls.push([cmd, ...args]);
     assert.equal(cmd, 'git');
     assert.deepEqual(args.slice(0, 4), ['-C', '/worktree', 'config', '--worktree']);
-    assert.deepEqual(args.slice(4, 5), ['--get-all']);
-    assert.ok(['harkness.issues', 'harkness.tracker'].includes(args[5]));
+    assert.equal(args[4], args[5] === 'harkness.managed-issues' ? '--get' : '--get-all');
+    assert.ok(['harkness.issues', 'harkness.managed-issues', 'harkness.tracker'].includes(args[5]));
     assert.ok(options.timeout > 0);
     const value = values[args[5]];
-    return value === undefined ? { status: 1, stdout: '' } : { status: 0, stdout: `${value.join('\n')}\n` };
+    if (value === undefined) return { status: 1, stdout: '' };
+    if (typeof value === 'object' && !Array.isArray(value)) return value;
+    return { status: 0, stdout: `${Array.isArray(value) ? value.join('\n') : value}\n` };
   };
   return { calls, read: () => readIssueIds('/worktree', exec) };
 }
 
 test('the Git reader handles empty, tracker, four, duplicate, and invalid values', () => {
   assert.deepEqual(gitReader().read(), []);
-  assert.deepEqual(gitReader({ 'harkness.tracker': ['IC-8'] }).read(), ['IC-8']);
+  const legacy = gitReader({ 'harkness.tracker': ['IC-8'] });
+  assert.deepEqual(legacy.read(), ['IC-8']);
+  assert.deepEqual(legacy.calls.map((call) => call[6]),
+    ['harkness.issues', 'harkness.managed-issues', 'harkness.tracker']);
   const four = gitReader({ 'harkness.issues': [...ids, 'IC-2', 'bad', 'IC-0', 'IC-5 extra'] });
   assert.deepEqual(four.read(), ids);
-  assert.equal(four.calls.length, 1, 'a present list needs no tracker call');
+  assert.equal(four.calls.length, 1, 'a present list needs no extra Git call');
+});
+
+test('a managed empty list never reads the tracker', () => {
+  const managed = gitReader({ 'harkness.managed-issues': 'true', 'harkness.tracker': ['IC-8'] });
+  assert.deepEqual(managed.read(), []);
+  assert.deepEqual(managed.calls.map((call) => call[6]), ['harkness.issues', 'harkness.managed-issues']);
+});
+
+test('a managed list keeps valid IDs without reading the managed key', () => {
+  const managed = gitReader({ 'harkness.issues': ['bad', 'IC-2', 'IC-2'], 'harkness.managed-issues': 'true' });
+  assert.deepEqual(managed.read(), ['IC-2']);
+  assert.equal(managed.calls.length, 1);
+});
+
+test('other managed key values keep the tracker fallback', () => {
+  for (const value of ['false', 'TRUE', '1', '', ' true', 'true ']) {
+    const reader = gitReader({ 'harkness.managed-issues': value, 'harkness.tracker': ['IC-8'] });
+    assert.deepEqual(reader.read(), ['IC-8'], value);
+  }
+});
+
+test('a Git failure while reading the managed key throws', () => {
+  const reader = gitReader({ 'harkness.managed-issues': { status: 2, stdout: '' }, 'harkness.tracker': ['IC-8'] });
+  assert.throws(reader.read, /git config could not read harkness\.managed-issues/);
+  assert.deepEqual(reader.calls.map((call) => call[6]), ['harkness.issues', 'harkness.managed-issues']);
 });
 
 function harness(initial = ids) {
