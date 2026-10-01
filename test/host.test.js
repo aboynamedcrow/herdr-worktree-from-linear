@@ -11,6 +11,7 @@ import {
   HOST_PROTOCOL, MAX_FRAME_BYTES, askHost, buildShowRequest, checkoutDigest, takeFrame,
 } from '../lib/hostwire.js';
 import { main as hostMain } from '../bin/slot-host.js';
+import { createListMode } from '../lib/list-mode.js';
 
 const PANE = 'w9:p2';
 
@@ -237,6 +238,35 @@ test('a repeat request for the same issue is reused, and starts no second fetch'
   assert.equal(reply.status, 'showing', 'the picker focuses this pane instead of restarting anything');
   assert.equal(linear.calls.length, 1);
   assert.equal(shown.length, 1, 'what is on screen was not re-rendered');
+});
+
+test('socket delivery selects an issue outside the running list until the list changes', async (t) => {
+  let list = ['IC-72', 'IC-73'];
+  let mode;
+  const updates = [];
+  const { host } = await liveHost(t, {
+    onListUpdate: (view) => updates.push(view),
+    listModeFactory: (options) => {
+      mode = createListMode({ ...options,
+        read: () => [...list],
+        load: () => ({ linearApiKey: 'synthetic-key' }),
+        fetchBatch: async (_config, values) => new Map(values.map((id) => [id, { identifier: id, title: id }])),
+        fetchOne: async (_config, id) => ({ identifier: id, title: `Delivered ${id}` }),
+        setTimer: () => 1, clearTimer: () => {},
+      });
+      return mode;
+    },
+  });
+  host.startList();
+  assert.equal(await until(() => updates.at(-1)?.issues.size === 2), true);
+  const delivered = await show(host, 'IC-99');
+  assert.equal(delivered.reply.status, 'accepted');
+  assert.equal(await until(() => mode.view().selected === 'IC-99'), true);
+  assert.equal(mode.view().override, 'IC-99');
+  list = ['IC-72', 'IC-73', 'IC-74'];
+  await mode.poll();
+  assert.equal(mode.view().selected, 'IC-72');
+  assert.equal(mode.view().override, null);
 });
 
 test('a different issue is refused as busy, and the shown one is left alone', async (t) => {

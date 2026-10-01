@@ -92,7 +92,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
   milliseconds. The wait is always finite, and each `herdr` command it runs is
   given what is left of it as its own timeout.
 - `issueSlotCommandMs` — the bound on every `herdr` command run after the layout
-  has settled, and on the socket call that focuses the slot. Default `5000`
+  has settled, and on the host socket call. Default `5000`
   milliseconds. A herdr that accepts a command and never answers cannot hold the
   picker open.
 - `popupWidth` / `popupHeight` — size of the `popup` placement, as a percentage
@@ -182,6 +182,22 @@ reported. It shows the identifier, title, state, assignee, priority, estimate, p
 cycle, labels, the description, and the comment threads oldest-first, fetched from Linear
 with your key and rendered by the plugin — no extra CLI needed.
 
+The host reads the task worktree's repeated `harkness.issues` Git config key every two
+seconds. Set one Linear ID per value in `config.worktree`. IDs use the form `IC-421`.
+The host ignores invalid values and keeps the first copy of each ID. If the key has no
+valid values, the host uses a valid `harkness.tracker` as one issue. With neither key,
+the host shows its ready text. The plugin reads this config. Dot writes it.
+
+One pane lists all IDs in config order. The selected issue's details appear below the
+list. The list row stays visible when there is one issue. Press `j` or `k` to select an
+issue. Press Enter for its full view. Press `o` to open it in Linear. Press `q` to return
+to the shell. The host names its own pane with the selected ID. It creates no pane.
+It fetches all listed details in one bounded Linear request per credential when the list
+changes, then once a minute. Mixed Linear workspaces need one request for each key.
+A failed request keeps the last good details and shows a short error.
+The host selects a delivered ID outside the list until the list changes.
+Native pane behavior is untested.
+
 **You start the viewer yourself.** In the pane you picked, run:
 
 ```bash
@@ -212,14 +228,12 @@ anything. Everything else is reported and left alone:
 - The layout has not finished being applied within `issueSlotSettleMs`.
 - herdr could not be asked, answered something unreadable, or did not answer within
   `issueSlotCommandMs`.
-- The host already has a different issue on screen: it says so and keeps what you are
-  reading.
 
 In all of those cases, the worktree stays open with its layout untouched.
 The plugin skips the issue view. A log line and bounded native notification say why.
 
-Invoking the action again for the same issue focuses the host that already has it rather
-than restarting anything, and never sends it a second fetch. That only happens when the
+Invoking the action again for the same issue reuses the host. It leaves focus on the
+current pane and sends no second fetch. That only happens when the
 pane's live foreground process is the host, the metadata it published names that same live
 process, and the host itself checks the issue over its socket — leftover metadata from a
 host that has since exited proves nothing on its own.
@@ -235,16 +249,10 @@ never a command, a script or an environment — and the host checks every field 
 against itself before acting. It is local same-user IPC, not a network endpoint, and not a
 daemon: the host dies with its pane. Socket paths must fit native metadata’s 80-byte bound. The host uses a short random directory and basename. It refuses an overlong custom runtime path with instructions to shorten `TMPDIR` or `XDG_RUNTIME_DIR`.
 
-Focusing one named pane is the only thing here herdr's CLI cannot do — `herdr pane focus`
-is directional — so that goes over `HERDR_SOCKET_PATH`, the same socket herdr's own plugins
-use, as a single bounded request with a deadline. Nothing is kept open and nothing is
-subscribed to.
+If Linear cannot be reached, the host keeps its last good details and shows an error.
+The host remains in the pane. You can still select an issue or press `q`.
 
-If Linear cannot be reached, the host prints why, exits non-zero and gives the pane back to
-your shell — the worktree and the layout that got you there are already correct, so nothing
-is rolled back. Start the host again yourself. The plugin cannot restart it without typing into your shell.
-
-With `glow` installed the description and comments are rendered as markdown at the pane's
+In the full view, `glow` renders the description and comments as markdown at the pane's
 width, and a resize re-renders to fit. Without it — or when the pane's output is not a
 terminal — the same content prints as plain text. Rendering is bounded like everything
 else: a renderer that has not finished within five seconds is signalled, the plain panel is
