@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deliverIssueDetails } from '../lib/slot.js';
 import { HOST_SCRIPT } from '../lib/hostwire.js';
+import { CLEAR } from '../lib/viewer.js';
 import { PTY_WRAPPER, ptyAvailable, until } from './pty.mjs';
 
 const WS = 'w9';
@@ -30,13 +31,33 @@ function tempDir(t, prefix) {
   return dir;
 }
 
+function issueCheckout(t, ids) {
+  const checkout = tempDir(t, 'wfl-e2e-list-');
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git('init', '-q');
+  git('config', 'extensions.worktreeConfig', 'true');
+  const setIds = (values) => {
+    git('config', '--worktree', '--unset-all', 'harkness.issues');
+    for (const id of values) git('config', '--worktree', '--add', 'harkness.issues', id);
+  };
+  for (const id of ids) git('config', '--worktree', '--add', 'harkness.issues', id);
+  return { checkout, setIds };
+}
+
+function lastScreen(output) {
+  return output.slice(output.lastIndexOf(CLEAR) + CLEAR.length);
+}
+
 // A stand-in for the herdr CLI that only records what it was asked to do. The host reaches
 // herdr exclusively through HERDR_BIN_PATH, so an empty log proves no native call happened.
 function stubHerdr(t, { body = 'exit 0' } = {}) {
   const dir = tempDir(t, 'wfl-e2e-stub-');
   const bin = join(dir, 'herdr-stub');
   const log = join(dir, 'calls.log');
-  writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\n${body}\n`);
+  writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\ncase "$1 $2" in\n  'pane report-metadata') [ "$#" -ge 5 ] || exit 2 ;;\n  'pane rename') [ "$#" -eq 4 ] || exit 2 ;;\n  *) exit 2 ;;\nesac\n${body}\n`);
   chmodSync(bin, 0o755);
   return { bin, log, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []) };
 }
@@ -45,10 +66,16 @@ function stubHerdr(t, { body = 'exit 0' } = {}) {
 // line flag on purpose: the driver identifies a host by its exact OS argv, and a node
 // option on the command line would (correctly) make it unrecognizable.
 function fakeLinear(issues) {
-  return `globalThis.fetch = async () => ({
-    ok: true, status: 200,
-    text: async () => JSON.stringify({ data: { issues: { nodes: ${JSON.stringify(issues)} } } }),
-  });`;
+  return `globalThis.fetch = async (_url, options) => {
+    const issues = ${JSON.stringify(issues)};
+    const data = { issues: { nodes: issues } };
+    const query = JSON.parse(options.body).query;
+    for (const match of query.matchAll(/i([0-9]+): issues\\(first: 1, filter: \\{ team: \\{ key: \\{ eq: "([A-Z0-9]+)" \\} \\}, number: \\{ eq: ([0-9]+) \\} \\}\\)/g)) {
+      const issue = issues.find((entry) => entry.identifier === match[2] + '-' + match[3]);
+      data['i' + match[1]] = { nodes: issue ? [issue] : [] };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data }) };
+  };`;
 }
 
 const failingLinear = 'globalThis.fetch = async () => { throw new Error("network is down"); };';
@@ -87,7 +114,8 @@ function hostProcess(t, { configDir, checkout, herdrBin, api, pane = PANE, keepS
       try { if (pid) process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
   });
-  return { child, out: () => out, err: () => err, exit, owned, quit: () => child.stdin.end('q') };
+  return { child, out: () => out, err: () => err, exit, owned,
+    type: (value) => child.stdin.write(value), quit: () => child.stdin.end('q') };
 }
 
 // The tokens the host published, read back out of the stub's log exactly as herdr would
@@ -116,6 +144,15 @@ function herdrFixture(pid, argv, tokens) {
   const exec = (cmd, args = []) => {
     calls.push([cmd, ...args]);
     const key = `${args[0]} ${args[1]}`;
+    const expected = {
+      'tab list': ['tab', 'list', '--workspace', WS],
+      'pane list': ['pane', 'list', '--workspace', WS],
+      'pane process-info': ['pane', 'process-info', '--pane', PANE],
+      'pane get': ['pane', 'get', PANE],
+    }[key];
+    if (!expected || JSON.stringify(args) !== JSON.stringify(expected)) {
+      return { status: 2, stdout: '', stderr: `invalid herdr call ${args.join(' ')}` };
+    }
     if (key === 'tab list') return reply({ type: 'tab_list', tabs: [{ tab_id: TAB, workspace_id: WS, label: 'Crew' }] });
     if (key === 'pane list') {
       return reply({ type: 'pane_list', panes: [{ pane_id: PANE, tab_id: TAB, workspace_id: WS, label: 'Issue' }] });
@@ -142,6 +179,93 @@ const worktreeStdout = (checkout) => JSON.stringify({ result: {
   tab: { tab_id: TAB, workspace_id: WS, label: 'Crew' },
   worktree: { path: checkout },
 } });
+
+test('full view keeps list keys and shows changes after Enter or Esc', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const configDir = tempDir(t, 'wfl-e2e-cfg-');
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
+  const { checkout, setIds } = issueCheckout(t, ['IC-1', 'IC-2']);
+  const binDir = tempDir(t, 'wfl-e2e-open-');
+  const openLog = join(binDir, 'open.log');
+  for (const command of ['open', 'xdg-open']) {
+    writeFileSync(join(binDir, command), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${JSON.stringify(openLog)}\n`);
+    chmodSync(join(binDir, command), 0o755);
+  }
+  const host = hostProcess(t, {
+    configDir, checkout, herdrBin: stub.bin, keepStdin: true, path: `${binDir}:/usr/bin:/bin`,
+    api: fakeLinear([
+      { identifier: 'IC-1', title: 'Alpha', url: 'https://linear.app/a/issue/IC-1' },
+      { identifier: 'IC-2', title: 'Beta', url: 'https://linear.app/a/issue/IC-2' },
+      { identifier: 'IC-3', title: 'Gamma', url: 'https://linear.app/a/issue/IC-3' },
+    ]),
+  });
+  const screen = () => lastScreen(host.out());
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out() + host.err());
+  const published = await until(() => publishedTokens(stub));
+  assert.ok(published, stub.calls().join(' | '));
+  host.owned.pid = Number(published.tokens['wfl-host-pid']);
+  assert.ok(await until(() => screen().includes('Alpha') && screen().includes('Beta')), host.out() + host.err());
+
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('Alpha') && !screen().includes('▸ IC-1')), host.out());
+  host.type('jk');
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out());
+  host.type('j');
+  assert.ok(await until(() => screen().includes('▸ IC-2')), host.out());
+
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('Beta') && !screen().includes('▸ IC-2')), host.out());
+  const selectedFirst = () => stub.calls().filter((call) => call === `pane rename ${PANE} Issue / Utility · IC-1`).length;
+  const beforeUpdate = selectedFirst();
+  setIds(['IC-1', 'IC-3']);
+  assert.ok(await until(() => selectedFirst() > beforeUpdate), stub.calls().join(' | '));
+  assert.ok(screen().includes('Beta') && !screen().includes('▸'), screen());
+  host.type('o');
+  assert.ok(await until(() => existsSync(openLog)), host.out() + host.err());
+  assert.equal(readFileSync(openLog, 'utf8').trim(), 'https://linear.app/a/issue/IC-2');
+  host.type('\x1b');
+  assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('IC-3') && !screen().includes('IC-2')), host.out());
+  host.quit();
+  assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+});
+
+test('glow completion and resize keep the full-view handler', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const configDir = tempDir(t, 'wfl-e2e-cfg-');
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
+  const { checkout } = issueCheckout(t, ['IC-1', 'IC-2']);
+  const binDir = tempDir(t, 'wfl-e2e-glow-');
+  writeFileSync(join(binDir, 'glow'), `#!${process.execPath}\nprocess.stdout.write('GLOW_MARKER\\n');\n`);
+  chmodSync(join(binDir, 'glow'), 0o755);
+  const host = hostProcess(t, {
+    configDir, checkout, herdrBin: stub.bin, keepStdin: true, path: `${binDir}:/usr/bin:/bin`,
+    api: `${fakeLinear([{ identifier: 'IC-1', title: 'Alpha' }, { identifier: 'IC-2', title: 'Beta' }])}\nprocess.on('SIGUSR1', () => process.stdout.emit('resize'));`,
+  });
+  const screen = () => lastScreen(host.out());
+  assert.ok(await until(() => screen().includes('Alpha') && screen().includes('Beta')), host.out() + host.err());
+  const published = await until(() => publishedTokens(stub));
+  assert.ok(published, stub.calls().join(' | '));
+  host.owned.pid = Number(published.tokens['wfl-host-pid']);
+
+  host.type('\r');
+  assert.ok(await until(() => host.out().includes('GLOW_MARKER')), host.out() + host.err());
+  process.kill(host.owned.pid, 'SIGUSR1');
+  assert.ok(await until(() => (host.out().match(/GLOW_MARKER/g) || []).length === 2), host.out() + host.err());
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out());
+  host.type('j');
+  assert.ok(await until(() => screen().includes('▸ IC-2')), host.out());
+  process.kill(host.owned.pid, 'SIGUSR1');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((host.out().match(/GLOW_MARKER/g) || []).length, 2, 'the old full view stays closed');
+  host.type('\r');
+  assert.ok(await until(() => (host.out().match(/GLOW_MARKER/g) || []).length === 3), host.out());
+  host.quit();
+  assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+});
 
 test('an issue reaches a real host over its own socket, and nothing is ever typed', async (t) => {
   if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
@@ -198,18 +322,19 @@ test('an issue reaches a real host over its own socket, and nothing is ever type
   assert.equal(first.res.action, 'accepted');
   assert.ok(await until(() => /Delivered without typing/.test(host.out())), host.out());
   assert.deepEqual(first.focused, []);
+  assert.ok(stub.calls().some((call) => call === `pane rename ${PANE} Issue / Utility · IC-72`),
+    'the host names only its own pane');
 
-  // The same issue again is the repeat path: the host confirms it already has it, and the
-  // pane is focused rather than anything being restarted.
+  // The same issue again is the repeat path. It leaves focus on the other pane.
   const repeat = await deliver('IC-72');
   assert.equal(repeat.res.ok, true, repeat.res.error);
-  assert.equal(repeat.res.action, 'focused');
-  assert.deepEqual(repeat.focused, [PANE]);
+  assert.equal(repeat.res.action, 'showing');
+  assert.deepEqual(repeat.focused, []);
 
-  // A different issue is refused: what the user is reading is not replaced.
+  // A delivered issue outside the list becomes the selection.
   const other = await deliver('IC-99');
-  assert.equal(other.res.ok, false);
-  assert.match(other.res.error, /busy: showing IC-72/);
+  assert.equal(other.res.ok, true);
+  assert.equal(other.res.action, 'accepted');
   assert.deepEqual(other.focused, []);
 
   // Across all three deliveries, not one call could put a character into a terminal.
@@ -230,13 +355,13 @@ test('an issue reaches a real host over its own socket, and nothing is ever type
   assert.equal(existsSync(socketDir), false, 'and so is the directory it lived in');
 });
 
-test('a failed fetch returns the pane to its shell and cleans up after itself', async (t) => {
+test('a failed delivery fetch keeps the host and shows one error', async (t) => {
   if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
   const stub = stubHerdr(t);
   const configDir = tempDir(t, 'wfl-e2e-cfg-');
   writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
   const checkout = tempDir(t, 'wfl-e2e-wt-');
-  const host = hostProcess(t, { configDir, checkout, herdrBin: stub.bin, api: failingLinear });
+  const host = hostProcess(t, { configDir, checkout, herdrBin: stub.bin, api: failingLinear, keepStdin: true });
 
   assert.ok(await until(() => /Ready in/.test(host.out())), host.out() + host.err());
   const { tokens } = await until(() => publishedTokens(stub));
@@ -257,11 +382,10 @@ test('a failed fetch returns the pane to its shell and cleans up after itself', 
   assert.equal(res.ok, true, res.error);
   assert.equal(res.action, 'accepted');
 
-  // The host is the one that finds out, and it hands the pane back rather than parking on
-  // an error the user then has to dismiss.
+  assert.ok(await until(() => /Linear: network is down/.test(host.out())), host.out());
+  host.quit();
   const exit = await host.exit;
-  assert.equal(exit.code, 1, host.out() + host.err());
-  assert.match(host.out(), /Could not load IC-72: .*network is down/);
+  assert.equal(exit.code, 0, host.out() + host.err());
   assert.equal(host.out().includes('synthetic-ic'), false);
   assert.ok(stub.calls().some((c) => c.includes('--clear-token wfl-host-pid')));
   assert.equal(existsSync(tokens['wfl-host-sock']), false);
@@ -321,6 +445,7 @@ test('a renderer that hangs is given up on, and never outlives the host', async 
   });
   assert.equal(res.ok, true, res.error);
 
+  host.type('\r');
   // The hung renderer really did start, and really is still running.
   assert.ok(await until(() => existsSync(glowPid)), 'the fake glow was started');
   const renderer = Number(readFileSync(glowPid, 'utf8').trim());
