@@ -18,3 +18,23 @@ Host process, checkout, socket, and instance checks still apply.
 The plugin creates no replacement pane and types no commands into a shell.
 
 The default remains label-based selection for existing installations.
+
+## Host list mode
+
+The task worktree stores active Linear IDs as repeated `harkness.issues` values in
+`config.worktree`. The host reads them with this command:
+
+```sh
+git -C <cwd> config --worktree --get-all harkness.issues
+```
+
+Each value must match `^[A-Z][A-Z0-9]*-[1-9][0-9]*$`. The host keeps
+config order and removes duplicate IDs. With no valid list value, it reads a valid
+`harkness.tracker` as one ID. With neither, it shows ready text. Dot owns all writes.
+
+The host checks the list every two seconds. It keeps the selected ID while that ID
+remains in the list. It requests all listed details in one bounded GraphQL call per
+credential after a list change and once a minute. Mixed Linear workspaces need separate
+calls. A failed call keeps the last good details. A delivered
+ID outside the list stays selected until the list changes. Delivery leaves pane focus
+where it was. The host renames only its own pane. Native pane behavior is untested.
