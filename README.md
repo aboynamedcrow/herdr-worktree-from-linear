@@ -184,9 +184,13 @@ with your key and rendered by the plugin — no extra CLI needed.
 
 The host reads the task worktree's repeated `harkness.issues` Git config key every two
 seconds. Set one Linear ID per value in `config.worktree`. IDs use the form `IC-421`.
-The host ignores invalid values and keeps the first copy of each ID. If the key has no
-valid values, the host uses a valid `harkness.tracker` as one issue. With neither key,
-the host shows its ready text. The plugin reads this config. Dot writes it.
+The host ignores invalid values and keeps the first copy of each ID. Dot writes
+`harkness.managed-issues=true` in the task worktree's `config.worktree` when it
+seeds the list. When this key is `true`, an empty list shows the ready text.
+The host does not fall back to `harkness.tracker`. If the key is absent or has
+another value, the host uses a valid tracker ID when the list has no valid ID.
+With no valid ID, it shows the ready text. The plugin reads this config. Dot
+owns the writes. No native test covers the managed key.
 
 One pane lists all IDs in config order. The selected issue's details appear below the
 list. The list row stays visible when there is one issue. Press `j` or `k` to select an

@@ -29,8 +29,12 @@ git -C <cwd> config --worktree --get-all harkness.issues
 ```
 
 Each value must match `^[A-Z][A-Z0-9]*-[1-9][0-9]*$`. The host keeps
-config order and removes duplicate IDs. With no valid list value, it reads a valid
-`harkness.tracker` as one ID. With neither, it shows ready text. Dot owns all writes.
+config order and removes duplicate IDs. Dot writes `harkness.managed-issues=true`
+in the task worktree's `config.worktree` when it seeds the list. When this key
+is `true`, an empty list shows ready text. The host does not read
+`harkness.tracker`. If the key is absent or has another value, the host uses a
+valid tracker ID when the list has no valid ID. With no valid ID, it shows
+ready text. Dot owns all writes. No native test covers the managed key.
 
 The host checks the list every two seconds. It keeps the selected ID while that ID
 remains in the list. It requests all listed details in one bounded GraphQL call per
