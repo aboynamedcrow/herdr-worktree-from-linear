@@ -58,6 +58,8 @@ export async function main({
   } catch { /* keep the Crew label */ }
   let host;
   let full = false;
+  let shownIssue = null;
+  let stopFullRender = null;
   let labelId = null;
   const render = (view) => {
     if (view.selected !== labelId) {
@@ -108,20 +110,36 @@ export async function main({
   }
 
   process.stdout.write(ready(host.checkout));
-  hold((key) => {
+  const onKey = (key) => {
     const action = listKeyAction(key);
+    if (full) {
+      if (action === 'full' || key === 0x1b) {
+        full = false;
+        shownIssue = null;
+        stopFullRender?.();
+        stopFullRender = null;
+        render(host.view());
+      } else if (action === 'open') openInLinear(shownIssue);
+      return;
+    }
     if (action === 'next') host.select(1);
     if (action === 'previous') host.select(-1);
     if (action === 'full') {
       const view = host.view();
       const issue = view?.issues.get(view.selected);
-      if (issue) { full = true; process.stdout.write(CLEAR); showIssue(issue); }
+      if (issue) {
+        full = true;
+        shownIssue = issue;
+        process.stdout.write(CLEAR);
+        stopFullRender = showIssue(issue, { onKey });
+      }
     }
     if (action === 'open') {
       const view = host.view();
       openInLinear(view?.issues.get(view.selected));
     }
-  });
+  };
+  hold(onKey);
   host.startList();
   return 0;
 }

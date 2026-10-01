@@ -9,9 +9,9 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { parseViewerArgs } from '../bin/issue.js';
-import { PTY_WRAPPER, ptyAvailable } from './pty.mjs';
+import { PTY_WRAPPER, ptyAvailable, until } from './pty.mjs';
 
 // A stand-in for the herdr CLI that only records what it was asked to do. Every native
 // call any entrypoint can make goes through HERDR_BIN_PATH, so an empty log proves none do.
@@ -159,4 +159,28 @@ test('on a real terminal the issue pane holds, and q closes it', (t) => {
   assert.match(res.stdout, /Could not load IC-72/);
   assert.ok(res.stdout.includes(HIDE_CURSOR), 'it held the pane open');
   assert.deepEqual(stub.calls(), [], 'it owns no slot, so it publishes nothing');
+});
+
+test('a one-issue showIssue call holds without a key handler', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const dir = configDir(t, TEAM_CONFIG);
+  const child = spawn('python3', ['-c', PTY_WRAPPER, process.execPath,
+    '--import', `data:text/javascript,${encodeURIComponent(fakeApi('synthetic-ic', 'IC-72', 'One issue'))}`,
+    resolve('bin/issue.js'), '--issue', 'IC-72', '--config-dir', dir, '--cwd', '/repos/dot'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: '/usr/bin:/bin', HERDR_BIN_PATH: stub.bin, KEY_IC: 'synthetic-ic' },
+  });
+  t.after(() => { try { process.kill(child.pid, 'SIGKILL'); } catch { /* already gone */ } });
+  let out = '';
+  let err = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  child.stderr.on('data', (chunk) => { err += chunk; });
+  const exit = new Promise((resolveExit) => child.on('exit', (code, signal) => resolveExit({ code, signal })));
+  assert.ok(await until(() => out.includes('One issue') && out.includes(HIDE_CURSOR)), out + err);
+  child.stdin.end('q');
+  assert.deepEqual(await exit, { code: 0, signal: null }, out + err);
+  assert.deepEqual(stub.calls(), []);
 });

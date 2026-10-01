@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deliverIssueDetails } from '../lib/slot.js';
 import { HOST_SCRIPT } from '../lib/hostwire.js';
+import { CLEAR } from '../lib/viewer.js';
 import { PTY_WRAPPER, ptyAvailable, until } from './pty.mjs';
 
 const WS = 'w9';
@@ -28,6 +29,26 @@ function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
+}
+
+function issueCheckout(t, ids) {
+  const checkout = tempDir(t, 'wfl-e2e-list-');
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git('init', '-q');
+  git('config', 'extensions.worktreeConfig', 'true');
+  const setIds = (values) => {
+    git('config', '--worktree', '--unset-all', 'harkness.issues');
+    for (const id of values) git('config', '--worktree', '--add', 'harkness.issues', id);
+  };
+  for (const id of ids) git('config', '--worktree', '--add', 'harkness.issues', id);
+  return { checkout, setIds };
+}
+
+function lastScreen(output) {
+  return output.slice(output.lastIndexOf(CLEAR) + CLEAR.length);
 }
 
 // A stand-in for the herdr CLI that only records what it was asked to do. The host reaches
@@ -45,10 +66,16 @@ function stubHerdr(t, { body = 'exit 0' } = {}) {
 // line flag on purpose: the driver identifies a host by its exact OS argv, and a node
 // option on the command line would (correctly) make it unrecognizable.
 function fakeLinear(issues) {
-  return `globalThis.fetch = async () => ({
-    ok: true, status: 200,
-    text: async () => JSON.stringify({ data: { issues: { nodes: ${JSON.stringify(issues)} } } }),
-  });`;
+  return `globalThis.fetch = async (_url, options) => {
+    const issues = ${JSON.stringify(issues)};
+    const data = { issues: { nodes: issues } };
+    const query = JSON.parse(options.body).query;
+    for (const match of query.matchAll(/i([0-9]+): issues\\(first: 1, filter: \\{ team: \\{ key: \\{ eq: "([A-Z0-9]+)" \\} \\}, number: \\{ eq: ([0-9]+) \\} \\}\\)/g)) {
+      const issue = issues.find((entry) => entry.identifier === match[2] + '-' + match[3]);
+      data['i' + match[1]] = { nodes: issue ? [issue] : [] };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data }) };
+  };`;
 }
 
 const failingLinear = 'globalThis.fetch = async () => { throw new Error("network is down"); };';
@@ -152,6 +179,93 @@ const worktreeStdout = (checkout) => JSON.stringify({ result: {
   tab: { tab_id: TAB, workspace_id: WS, label: 'Crew' },
   worktree: { path: checkout },
 } });
+
+test('full view keeps list keys and shows changes after Enter or Esc', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const configDir = tempDir(t, 'wfl-e2e-cfg-');
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
+  const { checkout, setIds } = issueCheckout(t, ['IC-1', 'IC-2']);
+  const binDir = tempDir(t, 'wfl-e2e-open-');
+  const openLog = join(binDir, 'open.log');
+  for (const command of ['open', 'xdg-open']) {
+    writeFileSync(join(binDir, command), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${JSON.stringify(openLog)}\n`);
+    chmodSync(join(binDir, command), 0o755);
+  }
+  const host = hostProcess(t, {
+    configDir, checkout, herdrBin: stub.bin, keepStdin: true, path: `${binDir}:/usr/bin:/bin`,
+    api: fakeLinear([
+      { identifier: 'IC-1', title: 'Alpha', url: 'https://linear.app/a/issue/IC-1' },
+      { identifier: 'IC-2', title: 'Beta', url: 'https://linear.app/a/issue/IC-2' },
+      { identifier: 'IC-3', title: 'Gamma', url: 'https://linear.app/a/issue/IC-3' },
+    ]),
+  });
+  const screen = () => lastScreen(host.out());
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out() + host.err());
+  const published = await until(() => publishedTokens(stub));
+  assert.ok(published, stub.calls().join(' | '));
+  host.owned.pid = Number(published.tokens['wfl-host-pid']);
+  assert.ok(await until(() => screen().includes('Alpha') && screen().includes('Beta')), host.out() + host.err());
+
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('Alpha') && !screen().includes('▸ IC-1')), host.out());
+  host.type('jk');
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out());
+  host.type('j');
+  assert.ok(await until(() => screen().includes('▸ IC-2')), host.out());
+
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('Beta') && !screen().includes('▸ IC-2')), host.out());
+  const selectedFirst = () => stub.calls().filter((call) => call === `pane rename ${PANE} Issue / Utility · IC-1`).length;
+  const beforeUpdate = selectedFirst();
+  setIds(['IC-1', 'IC-3']);
+  assert.ok(await until(() => selectedFirst() > beforeUpdate), stub.calls().join(' | '));
+  assert.ok(screen().includes('Beta') && !screen().includes('▸'), screen());
+  host.type('o');
+  assert.ok(await until(() => existsSync(openLog)), host.out() + host.err());
+  assert.equal(readFileSync(openLog, 'utf8').trim(), 'https://linear.app/a/issue/IC-2');
+  host.type('\x1b');
+  assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('IC-3') && !screen().includes('IC-2')), host.out());
+  host.quit();
+  assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+});
+
+test('glow completion and resize keep the full-view handler', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const configDir = tempDir(t, 'wfl-e2e-cfg-');
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
+  const { checkout } = issueCheckout(t, ['IC-1', 'IC-2']);
+  const binDir = tempDir(t, 'wfl-e2e-glow-');
+  writeFileSync(join(binDir, 'glow'), `#!${process.execPath}\nprocess.stdout.write('GLOW_MARKER\\n');\n`);
+  chmodSync(join(binDir, 'glow'), 0o755);
+  const host = hostProcess(t, {
+    configDir, checkout, herdrBin: stub.bin, keepStdin: true, path: `${binDir}:/usr/bin:/bin`,
+    api: `${fakeLinear([{ identifier: 'IC-1', title: 'Alpha' }, { identifier: 'IC-2', title: 'Beta' }])}\nprocess.on('SIGUSR1', () => process.stdout.emit('resize'));`,
+  });
+  const screen = () => lastScreen(host.out());
+  assert.ok(await until(() => screen().includes('Alpha') && screen().includes('Beta')), host.out() + host.err());
+  const published = await until(() => publishedTokens(stub));
+  assert.ok(published, stub.calls().join(' | '));
+  host.owned.pid = Number(published.tokens['wfl-host-pid']);
+
+  host.type('\r');
+  assert.ok(await until(() => host.out().includes('GLOW_MARKER')), host.out() + host.err());
+  process.kill(host.owned.pid, 'SIGUSR1');
+  assert.ok(await until(() => (host.out().match(/GLOW_MARKER/g) || []).length === 2), host.out() + host.err());
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('▸ IC-1')), host.out());
+  host.type('j');
+  assert.ok(await until(() => screen().includes('▸ IC-2')), host.out());
+  process.kill(host.owned.pid, 'SIGUSR1');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((host.out().match(/GLOW_MARKER/g) || []).length, 2, 'the old full view stays closed');
+  host.type('\r');
+  assert.ok(await until(() => (host.out().match(/GLOW_MARKER/g) || []).length === 3), host.out());
+  host.quit();
+  assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+});
 
 test('an issue reaches a real host over its own socket, and nothing is ever typed', async (t) => {
   if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
