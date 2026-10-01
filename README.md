@@ -190,8 +190,9 @@ the host shows its ready text. The plugin reads this config. Dot writes it.
 
 One pane lists all IDs in config order. The selected issue's details appear below the
 list. The list row stays visible when there is one issue. Press `j` or `k` to select an
-issue. Press Enter for its full view. Press `o` to open it in Linear. Press `q` to return
-to the shell. The host names its own pane with the selected ID. It creates no pane.
+issue. Press Enter for its full view. Press Enter or Esc to return to the list. Press `o`
+to open the shown issue in Linear. Press `q` to return to the shell. The host names its
+own pane with the selected ID. It creates no pane.
 It fetches all listed details in one bounded Linear request per credential when the list
 changes, then once a minute. Mixed Linear workspaces need one request for each key.
 A failed request keeps the last good details and shows a short error.
