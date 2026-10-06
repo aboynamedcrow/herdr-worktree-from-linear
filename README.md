@@ -60,6 +60,10 @@ herdr plugin install tdi/herdr-worktree-from-linear
   This does not combine workspace issue lists in the worktree picker. Map every
   team whose issues can be selected: a third team may appear through the picker's
   repository route but its detail pane will refuse to load until that team is mapped.
+  After Linear changes a team key, keep the old key in this map next to the new
+  one. The pane then loads an id with the old key, such as `HSYS-4619` after
+  `HSYS` became `ENG`. Linear resolves that old id, and the pane shows the
+  current id, `ENG-4619`. A crew slot keeps the id it stored.
 - `linearApiKeyEnvByPath` — optional ordered path rules for selecting an API
   key environment variable. The first rule whose `contains` substring appears
   in the repository root wins. Matching is case-insensitive.
