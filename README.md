@@ -203,6 +203,8 @@ to open the shown issue in Linear. Press `q` to return to the shell. The host na
 own pane with the selected ID. It creates no pane.
 It fetches all listed details in one bounded Linear request per credential when the list
 changes, then once a minute. Mixed Linear workspaces need one request for each key.
+Each ID that the team key filter misses costs one more request at every fetch. An
+ID with an old team key, or a missing issue, is such a miss.
 A failed request keeps the last good details and shows a short error.
 The host selects a delivered ID outside the list until the list changes.
 Native pane behavior is untested.
