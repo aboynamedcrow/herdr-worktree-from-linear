@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, fetchIssue, fetchIssueBatch, threadComments } from '../lib/linear.js';
+import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, buildIssueByIdBody, fetchIssue, fetchIssueBatch, threadComments } from '../lib/linear.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', state: { name: 'In Progress' }, assignee: { displayName: 'Darek' }, team: { key: 'BIT' } },
@@ -158,4 +158,60 @@ test('a batch fetch uses one request for every ID and includes state type and na
   assert.equal(requests, 1);
   assert.equal(issues.size, 4);
   assert.deepEqual([issues.get('HSYS-2').stateType, issues.get('HSYS-2').stateName], ['started', 'In Progress']);
+});
+
+// After a team key change (HSYS became ENG), Linear still resolves HSYS-N through
+// issue(id:), but the team key filter matches only the current key.
+const reply = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+const NOT_FOUND = { errors: [{ message: 'Entity not found: Issue', path: ['issue'] }], data: null };
+
+test('buildIssueByIdBody passes the identifier as a variable', () => {
+  const b = buildIssueByIdBody('HSYS-2');
+  assert.match(b.query, /issue\(id: \$id\)/);
+  assert.deepEqual(b.variables, { id: 'HSYS-2' });
+});
+
+test('fetchIssue finds an issue by an old team key and returns its current identifier', async () => {
+  const bodies = [];
+  const issue = await fetchIssue({ linearApiKey: 'k' }, 'HSYS-2', async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    return body.variables?.id
+      ? reply({ data: { issue: { identifier: 'ENG-2', title: 'Renamed', state: { type: 'started', name: 'In Progress' } } } })
+      : reply({ data: { issues: { nodes: [] } } });
+  });
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[0].query, /eq: "HSYS"/);
+  assert.deepEqual(bodies[1].variables, { id: 'HSYS-2' });
+  assert.deepEqual([issue.identifier, issue.title, issue.stateName], ['ENG-2', 'Renamed', 'In Progress']);
+});
+
+test('fetchIssue reports a missing old identifier as not found, and other errors as errors', async () => {
+  const lookup = (second) => async (_url, opts) => (JSON.parse(opts.body).variables?.id ? reply(second) : reply({ data: { issues: { nodes: [] } } }));
+  await assert.rejects(() => fetchIssue({ linearApiKey: 'k' }, 'HSYS-9', lookup(NOT_FOUND)), /issue HSYS-9 not found/);
+  await assert.rejects(() => fetchIssue({ linearApiKey: 'k' }, 'HSYS-9', lookup({ errors: [{ message: 'Rate limited' }] })), /GraphQL error.*Rate limited/);
+});
+
+test('a batch fetch looks up only the missed IDs by old identifier and keeps them under the stored ID', async () => {
+  const ids = ['IC-1', 'HSYS-2', 'HSYS-9'];
+  const lookups = [];
+  const issues = await fetchIssueBatch({ linearApiKey: 'k' }, ids, async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (!body.variables?.id) {
+      return reply({ data: { i0: { nodes: [{ identifier: 'IC-1', title: 'Current', state: { type: 'started', name: 'Todo' } }] }, i1: { nodes: [] }, i2: { nodes: [] } } });
+    }
+    lookups.push(body.variables.id);
+    return body.variables.id === 'HSYS-2'
+      ? reply({ data: { issue: { identifier: 'ENG-2', title: 'Renamed', state: { type: 'completed', name: 'Done' } } } })
+      : reply(NOT_FOUND);
+  });
+  assert.deepEqual(lookups.sort(), ['HSYS-2', 'HSYS-9']);
+  assert.deepEqual([...issues.keys()], ['IC-1', 'HSYS-2']);
+  assert.deepEqual([issues.get('HSYS-2').identifier, issues.get('HSYS-2').stateType], ['ENG-2', 'completed']);
+});
+
+test('a batch fetch still fails when an old-identifier lookup hits another error', async () => {
+  await assert.rejects(() => fetchIssueBatch({ linearApiKey: 'k' }, ['HSYS-2'], async (_url, opts) => (
+    JSON.parse(opts.body).variables?.id ? reply({ errors: [{ message: 'Rate limited' }] }) : reply({ data: { i0: { nodes: [] } } })
+  )), /GraphQL error.*Rate limited/);
 });
