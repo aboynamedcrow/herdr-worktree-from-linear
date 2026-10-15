@@ -1,4 +1,4 @@
-# Worktree from Linear — herdr plugin
+# Worktree from Linear: herdr plugin
 
 Pick an active Linear issue and open its worktree using Herdr Plus's shared project policy. Plus preserves existing branches and registered checkout paths. Multiple matches require an explicit choice. Issue details fill a configured pane in the resulting workspace.
 
@@ -12,11 +12,11 @@ herdr plugin install tdi/herdr-worktree-from-linear
 
 - **Herdr 0.9.0 or newer** and enabled **Herdr Plus** with `plan-worktree` / `apply-worktree` support and configured `[[worktree.projects]]` policies. Open the project’s primary workspace before creating linked worktrees.
 
-- **`fzf`** — the fuzzy picker (`brew install fzf`). Required for the intended
+- **`fzf`**: the fuzzy picker (`brew install fzf`). Required for the intended
   overlay. Without it, the picker uses a plain numbered prompt.
-- **`glow`** — optional (`brew install glow`). It renders the issue view's markdown.
+- **`glow`**: optional (`brew install glow`). It renders the issue view's markdown.
   Without it the pane prints the same plain-text panel as before.
-- **A Linear personal API key for each workspace** — Linear → Settings →
+- **A Linear personal API key for each workspace**: Linear → Settings →
   Security & access → API → create a personal key. Export each key under an
   environment-variable name, then configure the plugin to select that name by
   repository path (below).
@@ -51,7 +51,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
 }
 ```
 
-- `linearApiKeyEnvByTeam` — optional uppercase issue-team to environment-variable
+- `linearApiKeyEnvByTeam`: optional uppercase issue-team to environment-variable
   map for the issue-details pane. `HSYS-4619` selects `HSYS` even outside Git or
   when focused on a different checkout. An unmapped team fails explicitly. When
   no legacy inline `linearApiKey` is set, a missing selected environment key
@@ -65,17 +65,17 @@ herdr plugin install tdi/herdr-worktree-from-linear
   one. The pane then loads an id with the old key, such as `HSYS-4619` after
   `HSYS` became `ENG`. Linear resolves that old id, and the pane shows the
   current id, `ENG-4619`. A crew slot keeps the id it stored.
-- `linearApiKeyEnvByPath` — optional ordered path rules for selecting an API
+- `linearApiKeyEnvByPath`: optional ordered path rules for selecting an API
   key environment variable. The first rule whose `contains` substring appears
   in the repository root wins. Matching is case-insensitive.
-- `linearApiKeyEnvDefault` — the environment-variable name used when no path
+- `linearApiKeyEnvDefault`: the environment-variable name used when no path
   rule matches. This supports a small exception list with one common default.
-- `linearApiKey` — legacy key value. Existing configs remain supported and an
+- `linearApiKey`: legacy key value. Existing configs remain supported and an
   explicit value still takes precedence, but new configs should keep key values
   out of `config.json` and use the environment-variable options above.
-- `issueLimit` — max issues listed (default 50).
-- `teamKey` — optional; restrict to one team (e.g. `BIT`).
-- `repos` — optional; maps a Linear team key to the repo the worktree is created
+- `issueLimit`: max issues listed (default 50).
+- `teamKey`: optional. restrict to one team (e.g. `BIT`).
+- `repos`: optional. maps a Linear team key to the repo the worktree is created
   in, so a pick routes by the issue's team rather than by whichever pane invoked
   the action:
 
@@ -86,32 +86,32 @@ herdr plugin install tdi/herdr-worktree-from-linear
   A team absent from the map falls back to the invoking pane's repo, which is
   also the whole behaviour when `repos` is unset. With a mapped team you no
   longer need to invoke the action from inside a git repo at all.
-- `assignedToMe` — optional; when `true`, only list issues assigned to you (the
+- `assignedToMe`: optional. when `true`, only list issues assigned to you (the
   API key's user). Default `false` (all assignees).
-- `includeTriage` — optional. When `true`, also list issues in the triage state
+- `includeTriage`: optional. When `true`, also list issues in the triage state
   (on top of the unstarted/started defaults). Default `false`.
-- `placement` — where the picker pane opens: `"right"` (default), `"left"`,
+- `placement`: where the picker pane opens: `"right"` (default), `"left"`,
   `"top"`, `"down"` (splits, so your work stays visible), `"overlay"`
   (full-screen), or `"popup"` (centered floating window). `left`/`top` open a
   right/down split then swap into place.
-- `fzfLayout` — `"down"` (default, search bar at the bottom) or `"top"` (search bar at the top). The picker renders as a compact window either way.
-- `showIssueDetails` — optional. When `true`, opening a worktree also shows the
+- `fzfLayout`: `"down"` (default, search bar at the bottom) or `"top"` (search bar at the top). The picker renders as a compact window either way.
+- `showIssueDetails`: optional. When `true`, opening a worktree also shows the
   picked issue's details in a pane your layout already provides (see below).
   Default `false`, and it needs `issueTabLabel` and `issuePaneLabel`.
-- `issueTabLabel` / `issuePaneLabel` — the tab label, and the pane label inside
+- `issueTabLabel` / `issuePaneLabel`: the tab label, and the pane label inside
   that tab, that name the slot the issue view is delivered to. There is no
   default for either: the plugin will not guess which of your panes it is. Both
-  must match your layout exactly, and both must be unique — a renamed or
+  must match your layout exactly, and both must be unique. A renamed or
   duplicated label is reported rather than resolved.
-- `issueSlotSettleMs` / `issueSlotPollMs` — how long to wait for a layout that
+- `issueSlotSettleMs` / `issueSlotPollMs`: how long to wait for a layout that
   is still being applied, and how often to look. Defaults `5000` and `200`
   milliseconds. The wait is always finite, and each `herdr` command it runs is
   given what is left of it as its own timeout.
-- `issueSlotCommandMs` — the bound on every `herdr` command run after the layout
+- `issueSlotCommandMs`: the bound on every `herdr` command run after the layout
   has settled, and on the host socket call. Default `5000`
   milliseconds. A herdr that accepts a command and never answers cannot hold the
   picker open.
-- `popupWidth` / `popupHeight` — size of the `popup` placement, as a percentage
+- `popupWidth` / `popupHeight`: size of the `popup` placement, as a percentage
   (`"80%"`) or a terminal-cell count (`120`). Only used when `placement` is
   `popup`. Defaults `80%` × `70%`.
 
@@ -141,13 +141,13 @@ No key values are copied between workspaces or persisted by this routing.
 
 When neither `linearApiKeyEnvByPath` nor `linearApiKeyEnvDefault` is configured,
 the legacy behavior is unchanged: `linearApiKey` in `config.json` wins, then the
-plugin falls back to `LINEAR_API_KEY` — the same name Linear's SDK and CLI use.
+plugin falls back to `LINEAR_API_KEY`, the same name Linear's SDK and CLI use.
 An explicit `linearApiKey` also wins over repository-path routing when both are
 present, for backward compatibility.
 
 Keep keys in a secret manager instead of on disk. Herdr spawns plugin actions as
 child processes, so anything that exports the variables into the herdr server's
-environment works — `op run --`, a systemd `EnvironmentFile=`, direnv, or a
+environment works: `op run --`, a systemd `EnvironmentFile=`, direnv, or a
 plain shell export before `herdr`. Key values are inherited through the process
 environment and are not added to pane command arguments.
 
@@ -191,12 +191,12 @@ The `Worktree from Linear issue` action keeps its existing behavior.
 
 ### The issue slot
 
-With `showIssueDetails: true`, opening a worktree — freshly created or re-opened — also
+With `showIssueDetails: true`, opening a worktree (freshly created or re-opened) also
 shows the picked issue in a pane your own layout already provides: the pane labeled
 `issuePaneLabel` in the tab labeled `issueTabLabel`, inside the workspace herdr just
 reported. It shows the identifier, title, state, assignee, priority, estimate, project,
 cycle, labels, the description, and the comment threads oldest-first, fetched from Linear
-with your key and rendered by the plugin — no extra CLI needed.
+with your key and rendered by the plugin. No extra CLI is needed.
 
 The host reads the task worktree's repeated `harkness.issues` Git config key every two
 seconds. Set one Linear ID per value in `config.worktree`. IDs use the form `IC-421`.
@@ -230,21 +230,21 @@ node <plugin-dir>/bin/slot-host.js --pane "$HERDR_PANE_ID" \
 
 (`--cwd` defaults to the pane's working directory and must be the worktree the issue
 belongs to. `herdr plugin dir tdi.worktree-from-linear` gives you `<plugin-dir>`.) That
-process — the *issue host* — owns the pane while it runs, and picking an issue makes it
+process (the *issue host*) owns the pane while it runs, and picking an issue makes it
 show that issue. `q` or `Ctrl-C` quits it and gives the pane back to your shell. Your
 layout can start it for you as the pane's startup command.
 
 Why it works this way, rather than the plugin typing a command into your shell: a shell
 cannot be asked whether it is at a prompt. A shell sitting inside its own `read` builtin
 has the same pid, the same process group and the same name as an idle one, so anything
-"helpfully" typed there would be answering somebody's prompt — silently, and at exactly
+"helpfully" typed there would be answering somebody's prompt, silently, and at exactly
 the wrong moment. This plugin therefore never writes to a terminal at all. There is no
 command construction, no shell quoting and no `pane run` anywhere in it.
 
 Delivery also never changes your layout. It does not split, swap, move, resize or close
 anything. Everything else is reported and left alone:
 
-- The pane is not running an issue host — a shell, an agent, an editor, a command,
+- The pane is not running an issue host: a shell, an agent, an editor, a command,
   anything else. The message tells you the exact command to start one there.
 - The host that is running belongs to another checkout, or published incomplete identity.
 - The tab or pane label is missing, renamed, or matches more than one tab or pane.
@@ -252,13 +252,13 @@ anything. Everything else is reported and left alone:
 - herdr could not be asked, answered something unreadable, or did not answer within
   `issueSlotCommandMs`.
 
-In all of those cases, the worktree stays open with its layout untouched.
+In all of those cases, the worktree stays open with its layout unchanged.
 The plugin skips the issue view. A log line and bounded native notification say why.
 
 Invoking the action again for the same issue reuses the host. It leaves focus on the
 current pane and sends no second fetch. That only happens when the
-pane's live foreground process is the host, the metadata it published names that same live
-process, and the host itself checks the issue over its socket — leftover metadata from a
+pane's live foreground process is the host, the metadata it published identifies that same live
+process, and the host itself checks the issue over its socket. Leftover metadata from a
 host that has since exited proves nothing on its own.
 
 #### How the picker reaches the host
@@ -267,8 +267,8 @@ The host creates a unix socket in a directory it makes for itself (mode `0700`, 
 mode `0600`, both removed on the way out) and publishes the path, its pid, a random
 instance token and a digest of its checkout as metadata on its own pane. The picker reads
 those, checks them against the live foreground process, and sends one bounded request over
-that socket. A request carries a known operation and a checked issue identifier —
-never a command, a script or an environment — and the host checks every field of it
+that socket. A request carries a known operation and a checked issue identifier,
+never a command, a script or an environment, and the host checks every field of it
 against itself before acting. It is local same-user IPC, not a network endpoint, and not a
 daemon: the host dies with its pane. Socket paths must fit native metadata’s 80-byte bound. The host uses a short random directory and basename. It refuses an overlong custom runtime path with instructions to shorten `TMPDIR` or `XDG_RUNTIME_DIR`.
 
@@ -276,8 +276,8 @@ If Linear cannot be reached, the host keeps its last good details and shows an e
 The host remains in the pane. You can still select an issue or press `q`.
 
 In the full view, `glow` renders the description and comments as markdown at the pane's
-width, and a resize re-renders to fit. Without it — or when the pane's output is not a
-terminal — the same content prints as plain text. Rendering is bounded like everything
+width, and a resize re-renders to fit. Without it (or when the pane's output is not a
+terminal), the same content prints as plain text. Rendering is bounded like everything
 else: a renderer that has not finished within five seconds is signalled, the plain panel is
 printed instead, and the pane goes back to reading `q`. No renderer outlives the pane's own
 process.
@@ -293,7 +293,7 @@ until you close the pane. It owns no slot and publishes nothing.
 On herdr 0.7.4+, creating or opening an issue worktree also publishes a `linear`
 workspace metadata token, so the sidebar entry shows which issue the worktree is
 for: `BIT-1234`. The token carries no TTL, so it stays for the life of the
-workspace, and reporting it never affects the exit code — if herdr rejects it,
+workspace, and reporting it never affects the exit code: if herdr rejects it,
 the plugin logs a warning and the worktree is created all the same.
 
 Display it by adding `$linear` to `[ui.sidebar.spaces].rows` in
@@ -310,7 +310,7 @@ rows = [
 ```
 
 - The plugin never edits herdr config; this is a one-time display setting.
-- Useful mainly when your branch names bury or truncate the identifier — the
+- Useful mainly when your branch names bury or truncate the identifier: the
   `branch` token already shows it otherwise.
 - To drop the label, use the workspace id from `herdr workspace list`:
   `herdr workspace report-metadata <id> --source plugin:tdi.worktree-from-linear --clear-token linear`.

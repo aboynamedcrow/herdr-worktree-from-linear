@@ -15,7 +15,7 @@
 - Call herdr via `HERDR_BIN_PATH` (fallback `"herdr"`). Use `git` from PATH. No `gh`.
 - Linear: POST GraphQL to `https://api.linear.app/graphql` with header `Authorization: <linearApiKey>` (raw, not `Bearer`).
 - Repo is passed to the picker pane via `--env HERDR_WFP_CWD=<repo>`, **never** `--cwd` (that breaks the relative `node bin/picker.js` command). `resolveRepo` prefers `HERDR_WFP_CWD`.
-- Config (`config.json`): `linearApiKey` (required — clear error if missing), `issueLimit` (default 50), `base` (default `"default"`), `teamKey` (optional).
+- Config (`config.json`): `linearApiKey` (required, clear error if missing), `issueLimit` (default 50), `base` (default `"default"`), `teamKey` (optional).
 - `base` modes: `"default"` → `origin/<repo default branch>` (fetch); `"head"` → `HEAD` (no fetch); any other string → `origin/<that branch>` (fetch).
 - Issue scope: team-wide active issues (state type `unstarted`+`started`), `orderBy: updatedAt`, first `issueLimit`; optional `teamKey` filter.
 - Branch name = Linear's `issue.branchName`.
@@ -34,7 +34,7 @@
 | `lib/base.js` | `resolveBase` → `{ baseRef, needsFetch, baseBranch }` |
 | `lib/picker.js` | format lines, map line→issue, fzf-or-Node `select` |
 | `lib/worktree.js` | worktree/branch-exists check, argv builder (`--base`), fetch + create/open |
-| `lib/pane.js` | `openPickerArgs` (pure) — argv with `--env HERDR_WFP_CWD` |
+| `lib/pane.js` | `openPickerArgs` (pure): argv with `--env HERDR_WFP_CWD` |
 | `lib/run.js` | orchestrator |
 | `bin/open.js` | action: resolve cwd, open picker overlay |
 | `bin/picker.js` | pane entry: call `run`, map errors to exit code |
@@ -47,7 +47,7 @@
 
 **Files:** Create `package.json`, `herdr-plugin.toml`, `.gitignore`, `config.example.json`, `test/smoke.test.js`
 
-**Interfaces:** Produces a runnable project — `npm test` runs `node --test`.
+**Interfaces:** Produces a runnable project: `npm test` runs `node --test`.
 
 - [ ] **Step 1: `package.json`**
 
@@ -116,7 +116,7 @@ test('node test runner works', () => {
 });
 ```
 
-- [ ] **Step 6: Run tests** — `npm test` → PASS (1 test).
+- [ ] **Step 6: Run tests**: `npm test` → PASS (1 test).
 
 - [ ] **Step 7: Commit**
 
@@ -194,7 +194,7 @@ test('loadConfig throws on malformed JSON', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify fail** — `node --test test/exec.test.js test/config.test.js` → FAIL (modules not found).
+- [ ] **Step 3: Run to verify fail**: `node --test test/exec.test.js test/config.test.js` → FAIL (modules not found).
 
 - [ ] **Step 4: `lib/exec.js`**
 
@@ -244,7 +244,7 @@ export function loadConfig(configDir) {
 }
 ```
 
-- [ ] **Step 6: Run to verify pass** — `node --test test/exec.test.js test/config.test.js` → PASS (6 tests).
+- [ ] **Step 6: Run to verify pass**: `node --test test/exec.test.js test/config.test.js` → PASS (6 tests).
 
 - [ ] **Step 7: Commit**
 
@@ -296,7 +296,7 @@ test('resolveRepo throws when not a git repo', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail** — `node --test test/repo.test.js` → FAIL.
+- [ ] **Step 2: Run to verify fail**: `node --test test/repo.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/repo.js`**
 
@@ -343,7 +343,7 @@ export function resolveRepo(env, exec = runCmd) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — `node --test test/repo.test.js` → PASS (3 tests).
+- [ ] **Step 4: Run to verify pass**: `node --test test/repo.test.js` → PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -420,7 +420,7 @@ test('listIssues throws on GraphQL errors payload', async () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail** — `node --test test/linear.test.js` → FAIL.
+- [ ] **Step 2: Run to verify fail**: `node --test test/linear.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/linear.js`**
 
@@ -480,7 +480,7 @@ export async function listIssues(config, fetchFn = fetch) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — `node --test test/linear.test.js` → PASS (6 tests).
+- [ ] **Step 4: Run to verify pass**: `node --test test/linear.test.js` → PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -535,7 +535,7 @@ test('resolveBase with an explicit branch bases off origin/<name>', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail** — `node --test test/base.test.js` → FAIL.
+- [ ] **Step 2: Run to verify fail**: `node --test test/base.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/base.js`**
 
@@ -562,7 +562,7 @@ export function resolveBase(repoRoot, config = {}, exec = runCmd) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — `node --test test/base.test.js` → PASS (5 tests).
+- [ ] **Step 4: Run to verify pass**: `node --test test/base.test.js` → PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -610,7 +610,7 @@ test('lineToIssue maps a chosen line back by leading identifier', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail** — `node --test test/picker.test.js` → FAIL.
+- [ ] **Step 2: Run to verify fail**: `node --test test/picker.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/picker.js`**
 
@@ -660,7 +660,7 @@ export async function select(issues, { exec = runCmd } = {}) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — `node --test test/picker.test.js` → PASS (2 tests).
+- [ ] **Step 4: Run to verify pass**: `node --test test/picker.test.js` → PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -758,7 +758,7 @@ test('createOrOpenWorktree throws when fetch fails', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail** — `node --test test/worktree.test.js` → FAIL.
+- [ ] **Step 2: Run to verify fail**: `node --test test/worktree.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/worktree.js`**
 
@@ -801,7 +801,7 @@ export function createOrOpenWorktree(repoRoot, branchName, base, exec = runCmd, 
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — `node --test test/worktree.test.js` → PASS (7 tests).
+- [ ] **Step 4: Run to verify pass**: `node --test test/worktree.test.js` → PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -911,7 +911,7 @@ test('run is a no-op when the user cancels', async () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify fail** — `node --test test/run.test.js test/pane.test.js` → FAIL.
+- [ ] **Step 3: Run to verify fail**: `node --test test/run.test.js test/pane.test.js` → FAIL.
 
 - [ ] **Step 4: `lib/pane.js`**
 
@@ -990,9 +990,9 @@ run()
   });
 ```
 
-- [ ] **Step 8: Run to verify pass** — `node --test test/run.test.js test/pane.test.js` → PASS (5 tests).
+- [ ] **Step 8: Run to verify pass**: `node --test test/run.test.js test/pane.test.js` → PASS (5 tests).
 
-- [ ] **Step 9: Full suite** — `npm test` → PASS (all tests).
+- [ ] **Step 9: Full suite**: `npm test` → PASS (all tests).
 
 - [ ] **Step 10: Commit**
 
@@ -1088,6 +1088,6 @@ git commit -m "docs: add README with prerequisites"
 - Orchestration + no-op/cancel/no-branch/exit codes + `--env` not `--cwd` → Task 8.
 - Prerequisites (fzf, Linear key) + usage → Task 9.
 
-**Placeholder scan:** none — every code/test step is complete.
+**Placeholder scan:** none. Every code/test step is complete.
 
 **Type consistency:** Issue record `{identifier, title, branchName, url, stateName, assignee, teamKey}` produced by `parseIssues` (Task 4), consumed by `picker.js` (Task 6) and `run.js` (Task 8). `resolveBase → {baseRef, needsFetch, baseBranch}` (Task 5) consumed by `createOrOpenWorktree(repoRoot, branchName, base, exec, herdrBin)` (Task 7) and `run.js`. `runCmd → {status, stdout, stderr}` used by all exec wrappers and fakes. `listIssues(config, fetchFn)` and injected `fetchFn` shape (`{ok, status, text()}`) consistent between Task 4 and Task 8.
