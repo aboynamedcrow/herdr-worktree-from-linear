@@ -78,8 +78,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
   The plugin reads pages of at most 100 issues. It stops at this limit or the last page.
 - `teamKey`: optional. Restrict the list to one team (e.g. `BIT`).
 - `idTeamKey`: optional. Set the team for a bare number such as `1516`.
-  Without a matching row, the picker looks for `IC-1516` when this key is `IC`.
-  If absent, it uses `teamKey`. With neither key, a bare number selects only a matching row.
+  The fzf picker reads `IC-1516` from Linear when this key is `IC`.
+  If absent, it uses `teamKey`. With neither key, it reads the highlighted issue from Linear.
   A full ID uses its own team. It ignores both keys.
 - `repos`: optional. Map a Linear team key to an absolute repository path.
   The picker uses the selected issue's team after selection.
@@ -177,17 +177,64 @@ You can type an ID even with no listed issues.
 
 Type a full ID such as `IC-1516` and press Enter to select that exact issue.
 Letter case does not matter. A full ID wins over the highlighted row.
-The picker reuses a listed issue or loads it through Linear's `issue(id:)` lookup.
+The picker always reads a typed ID through Linear's `issue(id:)` lookup.
+It also does this when the ID matches a cached row or a row from the live reload.
 This lookup can find closed, unassigned, or older issues. It also resolves an old team key.
 Map that team in `linearApiKeyEnvByTeam` when you use team routing.
-A missing issue prints a message and sends a notification. It creates no worktree.
-Other API errors fail the action.
+A missing issue or a failed read prints a message and sends a notification.
+The action returns status 1. It creates no worktree and starts no task.
 
-A bare number uses `idTeamKey`, then `teamKey`, only when no row matches.
-With a matching row, the highlighted row wins.
+A bare number in fzf uses `idTeamKey`, then `teamKey`, before the highlighted row.
+Without either team, it reads the highlighted issue from Linear. With no row, it cancels.
 Without fzf, enter a row number or a full ID at the prompt.
 A valid row number wins over a bare-number lookup.
 Esc or Ctrl-C in fzf cancels the action.
+
+### Picker cache
+
+Each Mac stores its issue list under `$HOME/.cache/herdr-worktree-from-linear/`.
+Each Linear workspace has one file. Its name uses the selected API key variable, such as `LINEAR_API_KEY_EMBER.json`.
+A legacy inline key uses `inline.json`. No file holds an API key or a hash of that key.
+The cache holds issue rows, a fetch time, and the list filter values.
+Those values cover team, assignee, triage, recent hours, and issue limit.
+A change to any value requires a new fetch before the picker opens.
+Invalid JSON also requires a new fetch. The next successful fetch replaces that file.
+
+A cache hit opens fzf at once. The cache has no age limit.
+The header shows `cached <N>m ago` during the fetch.
+The age uses whole minutes since the stored fetch time. A future time shows zero minutes.
+An absent or invalid fetch time shows `refreshing`.
+A background fetch reads Linear and replaces the cache through a temporary file and a rename.
+It reloads fzf without changing your query. The header then shows `live`.
+A failed fetch keeps the rows and the file. The header adds ` | refresh failed`.
+
+Without a cache, the picker waits for Linear. It then stores the rows and opens with the `live` header.
+The cache directory uses mode `0700`. Each file uses mode `0600`.
+The reload uses a Unix socket inside a private temporary directory.
+The fzf process also receives a random API key through its environment.
+The picker removes the socket and its temporary files when fzf exits, including on cancel.
+If the fetch still runs, it finishes the cache write before the action continues or exits.
+It does not reload a closed picker.
+
+Before `pick` or `start` acts, it reads the selected issue from Linear.
+A typed ID lookup also satisfies this requirement. Each selection needs at most one such lookup.
+Plus receives the current title and identifier. Plus still owns the branch policy.
+The task command receives the current identifier.
+A failed fresh read returns status 1 without a plan or a task.
+`show` can use a cached row without another lookup. Its issue host fetches the details as before.
+
+Without fzf, the numbered prompt keeps its initial rows while the fetch updates the cache.
+A row number still selects a row. A full ID still requires a Linear lookup.
+If `HOME` is absent, the picker does not use a disk cache.
+A failed cache write prints a warning. The picker still uses the live rows.
+
+To clear the cache on this Mac, remove its directory:
+
+```sh
+rm -rf "$HOME/.cache/herdr-worktree-from-linear"
+```
+
+The next open waits for Linear and creates a new cache.
 
 Rows show the state before the title:
 
