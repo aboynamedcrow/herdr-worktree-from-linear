@@ -12,6 +12,7 @@ import {
 } from '../lib/hostwire.js';
 import { main as hostMain } from '../bin/slot-host.js';
 import { createListMode } from '../lib/list-mode.js';
+import { createSharedFetcher } from '../lib/fetcher.js';
 
 const PANE = 'w9:p2';
 
@@ -247,13 +248,14 @@ test('socket delivery selects an issue outside the running list until the list c
   const { host } = await liveHost(t, {
     onListUpdate: (view) => updates.push(view),
     listModeFactory: (options) => {
-      mode = createListMode({ ...options,
-        read: () => [...list],
+      // A private fetcher (no shared directory), with Linear replaced below the wire.
+      const fetcher = createSharedFetcher({
+        configDir: options.configDir, checkout: options.checkout, dir: null, pid: 4242, instance: 'i0',
         load: () => ({ linearApiKey: 'synthetic-key' }),
+        probe: async (_config, values) => new Map(values.map((id) => [id, 't1'])),
         fetchBatch: async (_config, values) => new Map(values.map((id) => [id, { identifier: id, title: id }])),
-        fetchOne: async (_config, id) => ({ identifier: id, title: `Delivered ${id}` }),
-        setTimer: () => 1, clearTimer: () => {},
       });
+      mode = createListMode({ ...options, read: () => [...list], fetcher, setTimer: () => 1, clearTimer: () => {} });
       return mode;
     },
   });

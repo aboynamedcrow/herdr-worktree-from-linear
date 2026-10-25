@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deliverIssueDetails } from '../lib/slot.js';
@@ -57,7 +57,7 @@ function stubHerdr(t, { body = 'exit 0' } = {}) {
   const dir = tempDir(t, 'wfl-e2e-stub-');
   const bin = join(dir, 'herdr-stub');
   const log = join(dir, 'calls.log');
-  writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\ncase "$1 $2" in\n  'pane report-metadata') [ "$#" -ge 5 ] || exit 2 ;;\n  'pane rename') [ "$#" -eq 4 ] || exit 2 ;;\n  *) exit 2 ;;\nesac\n${body}\n`);
+  writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\ncase "$1 $2" in\n  'pane report-metadata') [ "$#" -ge 5 ] || exit 2 ;;\n  'pane rename') [ "$#" -eq 4 ] || exit 2 ;;\n  'pane get') [ "$#" -eq 3 ] || exit 2; printf '%s\\n' '{"result":{"type":"pane_info","pane":{"pane_id":"'"$3"'","focused":false}}}'; exit 0 ;;\n  *) exit 2 ;;\nesac\n${body}\n`);
   chmodSync(bin, 0o755);
   return { bin, log, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []) };
 }
@@ -80,10 +80,30 @@ function fakeLinear(issues) {
 
 const failingLinear = 'globalThis.fetch = async () => { throw new Error("network is down"); };';
 
+// The same Linear stand-in, reading its issues from a file at every request, so a test can
+// change an issue while the host runs. The probe for `updatedAt` and the full fetch are
+// the same GraphQL shape with different fields, so one answer serves both.
+function fakeLinearFile(path) {
+  return `import { readFileSync } from 'node:fs';
+  globalThis.fetch = async (_url, options) => {
+    const issues = JSON.parse(readFileSync(${JSON.stringify(path)}, 'utf8'));
+    const data = {};
+    const query = JSON.parse(options.body).query;
+    for (const match of query.matchAll(/i([0-9]+): issues\\(first: 1, filter: \\{ team: \\{ key: \\{ eq: "([A-Z0-9]+)" \\} \\}, number: \\{ eq: ([0-9]+) \\} \\}\\)/g)) {
+      const issue = issues.find((entry) => entry.identifier === match[2] + '-' + match[3]);
+      data['i' + match[1]] = { nodes: issue ? [issue] : [] };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data }) };
+  };`;
+}
+
 // python's pty.spawn relays this process's stdin into the pty and stops only when BOTH
 // the pty and that stdin reach EOF, so a test that never intends to type closes stdin
 // immediately; one that does, closes it with the keystroke.
-function hostProcess(t, { configDir, checkout, herdrBin, api, pane = PANE, keepStdin = false, path = '/usr/bin:/bin' }) {
+// Every host of one user on one Mac shares one fetcher directory. A test host gets its
+// own, so the hosts of these tests never meet a real one, or each other's.
+function hostProcess(t, { configDir, checkout, herdrBin, api, pane = PANE, keepStdin = false, path = '/usr/bin:/bin',
+  sharedDir = tempDir(t, 'wfl-e2e-shared-') }) {
   const child = spawn('python3', [
     '-c', PTY_WRAPPER,
     process.execPath, HOST_SCRIPT, '--pane', pane, '--config-dir', configDir, '--cwd', checkout,
@@ -94,6 +114,7 @@ function hostProcess(t, { configDir, checkout, herdrBin, api, pane = PANE, keepS
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
       HERDR_BIN_PATH: herdrBin,
+      WFL_SHARED_DIR: sharedDir,
       KEY_IC: 'synthetic-ic',
       NODE_OPTIONS: `--import data:text/javascript,${encodeURIComponent(api)}`,
     },
@@ -229,6 +250,50 @@ test('full view keeps list keys and shows changes after Enter or Esc', async (t)
   assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('IC-3') && !screen().includes('IC-2')), host.out());
   host.quit();
   assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+});
+
+test('r fetches now, and the full view redraws when its issue changed', async (t) => {
+  if (!ptyAvailable()) return t.skip('python3 pty module unavailable');
+  const stub = stubHerdr(t);
+  const configDir = tempDir(t, 'wfl-e2e-cfg-');
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ linearApiKeyEnvByTeam: { IC: 'KEY_IC' } }));
+  const { checkout } = issueCheckout(t, ['IC-1']);
+  const sharedDir = tempDir(t, 'wfl-e2e-shared-');
+  const fixture = join(tempDir(t, 'wfl-e2e-linear-'), 'issues.json');
+  const publish = (title, updatedAt) => writeFileSync(fixture, JSON.stringify([
+    { identifier: 'IC-1', updatedAt, title, url: 'https://linear.app/a/issue/IC-1', description: `Body of ${title}` },
+  ]));
+  publish('Alpha', '2026-10-24T10:00:00.000Z');
+  const host = hostProcess(t, { configDir, checkout, herdrBin: stub.bin, keepStdin: true, sharedDir, api: fakeLinearFile(fixture) });
+  const screen = () => lastScreen(host.out());
+  assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('Alpha')), host.out() + host.err());
+  const published = await until(() => publishedTokens(stub));
+  assert.ok(published, stub.calls().join(' | '));
+  host.owned.pid = Number(published.tokens['wfl-host-pid']);
+
+  // Full view. A change in Linear reaches it with r, and the screen is redrawn from the top.
+  host.type('\r');
+  assert.ok(await until(() => screen().includes('Body of Alpha') && !screen().includes('▸ IC-1')), host.out());
+  publish('Alpha, second draft', '2026-10-24T11:00:00.000Z');
+  host.type('r');
+  assert.ok(await until(() => screen().includes('Body of Alpha, second draft') && !screen().includes('▸')), host.out());
+
+  // Back in the list, r does the same for the list rows.
+  host.type('\x1b');
+  assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('Alpha, second draft')), host.out());
+  publish('Alpha, third draft', '2026-10-24T12:00:00.000Z');
+  host.type('r');
+  assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('Alpha, third draft')), host.out());
+  assert.equal(screen().includes('Fetcher:'), false, 'the shared directory was usable');
+
+  // The shared directory holds the lock, this host's interest and the cache, and no key.
+  const names = readdirSync(sharedDir).sort();
+  assert.deepEqual(names, [`host-${host.owned.pid}.json`, 'issues.json', 'leader.json']);
+  for (const name of names) assert.equal(readFileSync(join(sharedDir, name), 'utf8').includes('synthetic-ic'), false, name);
+  assert.equal(JSON.parse(readFileSync(join(sharedDir, 'issues.json'), 'utf8')).issues['IC-1'].issue.title, 'Alpha, third draft');
+  host.quit();
+  assert.deepEqual(await host.exit, { code: 0, signal: null }, host.out() + host.err());
+  assert.deepEqual(readdirSync(sharedDir), ['issues.json'], 'a quitting host removes its lock and interest');
 });
 
 test('glow completion and resize keep the full-view handler', async (t) => {
@@ -382,7 +447,7 @@ test('a failed delivery fetch keeps the host and shows one error', async (t) => 
   assert.equal(res.ok, true, res.error);
   assert.equal(res.action, 'accepted');
 
-  assert.ok(await until(() => /Linear: network is down/.test(host.out())), host.out());
+  assert.ok(await until(() => /Linear: IC-72: network is down/.test(host.out())), host.out());
   host.quit();
   const exit = await host.exit;
   assert.equal(exit.code, 0, host.out() + host.err());
