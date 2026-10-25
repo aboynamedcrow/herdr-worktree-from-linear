@@ -7,7 +7,7 @@ const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-988', title: 'REST API [v2]', branchName: 'tdi/bit-988-rest', url: 'u2', state: { name: 'Todo' }, assignee: null, team: { key: 'BIT' } },
 ] } } });
 
-test('buildIssuesBody sets first and the active-state filter, team optional', () => {
+test('buildIssuesBody sets first and the open-state filter, team optional', () => {
   const a = buildIssuesBody(50);
   assert.equal(a.variables.first, 50);
   assert.match(a.query, /unstarted/);
@@ -15,6 +15,38 @@ test('buildIssuesBody sets first and the active-state filter, team optional', ()
   assert.equal(/team:/.test(a.query), false);
   const b = buildIssuesBody(10, 'BIT');
   assert.match(b.query, /team:\s*\{\s*key:\s*\{\s*eq:\s*"BIT"/);
+});
+
+const NOW = Date.parse('2026-10-24T12:00:00.000Z');
+const CUTOFF = '2026-10-23T12:00:00.000Z';
+
+test('the default recent window uses separate open, completedAt, and canceledAt items', () => {
+  const body = buildIssuesBody(500, 'BIT', true, true, null, undefined, () => NOW);
+  assert.deepEqual(body.variables, { first: 100, after: null });
+  assert.ok(body.query.includes(`filter: { team: { key: { eq: "BIT" } }, assignee: { isMe: { eq: true } }, or: [{ state: { type: { in: ["triage", "backlog", "unstarted", "started"] } } }, { completedAt: { gt: "${CUTOFF}" } }, { canceledAt: { gt: "${CUTOFF}" } }] }`));
+  assert.match(body.query, /orderBy: updatedAt/);
+});
+
+test('triage stays optional with a recent window and no team or assignee', () => {
+  const body = buildIssuesBody(50, undefined, false, false, null, undefined, () => NOW);
+  assert.match(body.query, /in: \["backlog", "unstarted", "started"\]/);
+  assert.doesNotMatch(body.query, /triage|team:|assignee:/);
+  assert.ok(body.query.includes(`completedAt: { gt: "${CUTOFF}" }`));
+  assert.ok(body.query.includes(`canceledAt: { gt: "${CUTOFF}" }`));
+});
+
+test('zero recent hours uses the open filter without or or date items', () => {
+  const body = buildIssuesBody(50, 'BIT', true, true, null, 0, () => assert.fail('zero needs no cutoff'));
+  assert.ok(body.query.includes('filter: { team: { key: { eq: "BIT" } }, assignee: { isMe: { eq: true } }, state: { type: { in: ["triage", "backlog", "unstarted", "started"] } } }'));
+  assert.doesNotMatch(body.query, /or:|completedAt|canceledAt/);
+});
+
+test('custom and fractional hours move both date cutoffs', () => {
+  for (const [hours, cutoff] of [[48, '2026-10-22T12:00:00.000Z'], [0.5, '2026-10-24T11:30:00.000Z']]) {
+    const body = buildIssuesBody(50, undefined, false, false, null, hours, () => NOW);
+    assert.ok(body.query.includes(`completedAt: { gt: ${JSON.stringify(cutoff)} }`));
+    assert.ok(body.query.includes(`canceledAt: { gt: ${JSON.stringify(cutoff)} }`));
+  }
 });
 
 test('buildIssuesBody adds the assignee=me filter only when assignedToMe', () => {
@@ -219,19 +251,37 @@ test('a batch fetch still fails when an old-identifier lookup hits another error
 
 test('list pages pass the cursor and stop at the issue limit', async () => {
   const calls = [];
+  let clockCalls = 0;
   const result = await listIssues({ linearApiKey: 'k', issueLimit: 102 }, async (_url, opts) => {
     const body = JSON.parse(opts.body);
     calls.push(body);
     const firstPage = calls.length === 1;
     const nodes = Array.from({ length: firstPage ? 100 : 3 }, (_, i) => ({ identifier: `IC-${(firstPage ? 0 : 100) + i + 1}` }));
     return reply({ data: { issues: { nodes, pageInfo: { hasNextPage: true, endCursor: firstPage ? 'cursor-1' : 'cursor-2' } } } });
-  });
+  }, () => { clockCalls++; return NOW + (clockCalls - 1) * 3600000; });
   assert.equal(result.length, 102);
   assert.equal(result[100].identifier, 'IC-101');
   assert.equal(result[101].identifier, 'IC-102');
   assert.deepEqual(calls.map((body) => body.variables), [{ first: 100, after: null }, { first: 2, after: 'cursor-1' }]);
   assert.match(calls[0].query, /after: \$after/);
   assert.match(calls[0].query, /pageInfo \{ hasNextPage endCursor \}/);
+  assert.equal(clockCalls, 1, 'one list reads the clock once');
+  for (const body of calls) {
+    assert.ok(body.query.includes(`completedAt: { gt: "${CUTOFF}" }`));
+    assert.ok(body.query.includes(`canceledAt: { gt: "${CUTOFF}" }`));
+  }
+});
+
+test('listIssues passes custom recentDoneHours to the query builder', async () => {
+  for (const hours of [0, 48]) {
+    const issues = await listIssues({ linearApiKey: 'k', issueLimit: 500, recentDoneHours: hours }, async (_url, opts) => {
+      const { query } = JSON.parse(opts.body);
+      if (hours === 0) assert.doesNotMatch(query, /or:|completedAt|canceledAt/);
+      else assert.ok(query.includes('completedAt: { gt: "2026-10-22T12:00:00.000Z" }'));
+      return reply({ data: { issues: { nodes: [] } } });
+    }, () => NOW);
+    assert.deepEqual(issues, []);
+  }
 });
 
 test('list stops at the last page below the limit', async () => {

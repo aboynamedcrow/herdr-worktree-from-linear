@@ -37,6 +37,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
   ],
   "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
   "issueLimit": 500,
+  "recentDoneHours": 24,
   "teamKey": "BIT",
   "repos": { "BIT": "/home/you/bit-repo" },
   "idTeamKey": "IC",
@@ -94,7 +95,10 @@ herdr plugin install tdi/herdr-worktree-from-linear
 - `assignedToMe`: optional. When `true`, only list issues assigned to you (the
   API key's user). Default `false` (all assignees).
 - `includeTriage`: optional. When `true`, also list issues in the triage state
-  (on top of the unstarted/started defaults). Default `false`.
+  with the backlog, unstarted, and started states. Default `false`.
+- `recentDoneHours`: include completed, canceled, and duplicate issues that closed within this many hours.
+  Default `24`. Use `0` to list only open issues. Finite numbers of zero or greater are valid.
+  Fractions are valid, such as `0.5` for 30 minutes.
 - `placement`: where the picker pane opens: `"right"` (default), `"left"`,
   `"top"`, `"down"` (splits, so your work stays visible), `"overlay"`
   (full-screen), or `"popup"` (centered floating window). `left`/`top` open a
@@ -163,9 +167,12 @@ pane layout. `overlay` also closes back to the original layout when the picker e
 
 Bind the `Worktree from Linear issue` action to a key (herdr `[[keys.command]]`,
 `type = "plugin_action"`, `command = "tdi.worktree-from-linear.pick"`), or invoke
-it from the action menu. The picker lists active issues through the configured filters.
+it from the action menu. The picker lists backlog, unstarted, and started issues.
+It also lists triage issues when `includeTriage` is true.
+It includes completed, canceled, and duplicate issues that closed in the last `recentDoneHours` hours.
+The team and assignee filters apply to all these issues. The list orders issues by their last update.
 It reads pages until it reaches `issueLimit` or the last page.
-An empty list prints `no active issues` and still opens the picker.
+An empty list prints `no issues` and still opens the picker.
 You can type an ID even with no listed issues.
 
 Type a full ID such as `IC-1516` and press Enter to select that exact issue.
@@ -276,6 +283,10 @@ and in the full view. Press `q` to return to the shell. The host names its
 own pane with the selected ID. It creates no pane.
 The full view redraws when its issue changed in Linear. It clears the screen and the
 scrollback first, the same way it does when it opens.
+The full view follows a new selection and stops the previous render.
+It shows loading text until the new issue's details arrive. The new issue uses the full view's fetch rate.
+If the selection becomes empty, the host returns to the list or ready text.
+Enter or Esc still returns to the list. Press `o` to open the new issue in Linear.
 A failed request keeps the last good details and shows a short error.
 The host selects a delivered ID outside the list until the list changes.
 Native pane behavior is untested.

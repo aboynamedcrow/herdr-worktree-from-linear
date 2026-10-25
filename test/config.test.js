@@ -25,13 +25,13 @@ function withEnvKey(value, fn) {
 
 test('loadConfig merges defaults and keeps the api key', () => {
   const dir = withDir('{"linearApiKey":"k"}');
-  assert.deepEqual(loadConfig(dir), { issueLimit: 500, fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
+  assert.deepEqual(loadConfig(dir), { issueLimit: 500, recentDoneHours: 24, fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
   rmSync(dir, { recursive: true, force: true });
 });
 
 test('loadConfig honors overrides', () => {
   const dir = withDir('{"linearApiKey":"k","issueLimit":10,"base":"head","teamKey":"BIT"}');
-  assert.deepEqual(loadConfig(dir), { issueLimit: 10, base: 'head', fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k', teamKey: 'BIT' });
+  assert.deepEqual(loadConfig(dir), { issueLimit: 10, recentDoneHours: 24, base: 'head', fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k', teamKey: 'BIT' });
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -178,3 +178,19 @@ test('loadConfig throws on malformed JSON', () => {
   assert.throws(() => loadConfig(dir), /invalid config\.json/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+for (const hours of [0, 0.5, 48]) {
+  test(`loadConfig accepts recentDoneHours ${hours}`, (t) => {
+    const dir = withDir(JSON.stringify({ linearApiKey: 'k', recentDoneHours: hours }));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.equal(loadConfig(dir).recentDoneHours, hours);
+  });
+}
+
+for (const value of ['-1', '"24"', 'null', 'true', 'false', '[]', '{}', '1e400', '-1e400']) {
+  test(`loadConfig rejects recentDoneHours ${value}`, (t) => {
+    const dir = withDir(`{"linearApiKey":"k","recentDoneHours":${value}}`);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.throws(() => loadConfig(dir), /recentDoneHours must be a finite number of hours, 0 or greater/);
+  });
+}

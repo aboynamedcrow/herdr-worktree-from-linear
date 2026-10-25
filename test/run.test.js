@@ -344,14 +344,14 @@ test('cancelling changes nothing: no worktree, no inventory, no input', async ()
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('run is a no-op when there are no active issues', async () => {
+test('run is a no-op when there are no issues', async () => {
   const dir = keyDir();
   const { exec } = fakeExec();
   const fetchFn = async () => ({ ok: true, status: 200, text: async () => '{"data":{"issues":{"nodes":[]}}}' });
   const logs = [];
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec, fetchFn, select: async () => null, log: (m) => logs.push(m) });
   assert.equal(code, 0);
-  assert.ok(logs.some((m) => /no active issues/.test(m)));
+  assert.ok(logs.some((m) => /no issues/.test(m)));
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -504,7 +504,7 @@ test('empty lists still open the picker and can load an ID', async (t) => {
   const result = await runQuery(t, { query: 'IC-1516', list: false });
   assert.equal(result.code, 0);
   assert.equal(result.fetches.length, 2);
-  assert.equal(result.logs[0], 'worktree-from-linear: no active issues');
+  assert.equal(result.logs[0], 'worktree-from-linear: no issues');
   assert.ok(result.calls.some((call) => call[0] === 'fzf'));
 });
 
