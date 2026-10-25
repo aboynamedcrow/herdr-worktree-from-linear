@@ -1,6 +1,7 @@
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatLine, formatLines, lineToIssue, fzfArgs, selectWorktree } from '../lib/picker.js';
+import { formatLine, formatLines, lineToIssue, fzfArgs, selectWorktree, select, nodeSelect } from '../lib/picker.js';
 
 test('fzfArgs adds --layout=reverse only for the top layout', () => {
   assert.deepEqual(fzfArgs('top'), ['--layout=reverse', '--height=~40%', '--prompt', 'issue> ']);
@@ -14,8 +15,8 @@ const ISSUES = [
 ];
 
 test('formatLine leads with the identifier and shows state', () => {
-  assert.match(formatLine(ISSUES[0]), /^BIT-990\s+Label API keys\s+\[In Progress\] @Darek$/);
-  assert.match(formatLine(ISSUES[1]), /^BIT-988\s+REST API \[v2\]\s+\[Todo\] @$/);
+  assert.match(formatLine(ISSUES[0]), /^BIT-990\s+In Progress\s+Label API keys\s+@Darek$/);
+  assert.match(formatLine(ISSUES[1]), /^BIT-988\s+Todo\s+REST API \[v2\]$/);
 });
 
 test('lineToIssue maps a chosen line back by leading identifier', () => {
@@ -70,4 +71,96 @@ test('remote restore choice retains the exact backend id', async () => {
     return { status: 0, stdout: opts.input };
   } });
   assert.equal(chosen, candidate);
+});
+
+for (const [type, name, icon] of [
+  ['triage', 'Triage', '◇'], ['backlog', 'Backlog', '◌'], ['unstarted', 'Todo', '○'],
+  ['started', 'In Progress', '◐'], ['started', 'In REVIEW', '◕'], ['completed', 'Done', '●'],
+  ['canceled', 'Canceled', '⊘'], ['duplicate', 'Duplicate', '⊘'], ['unknown', 'Other', ''],
+]) {
+  test(`row renders ${type} ${name}`, () => {
+    assert.equal(formatLine({ identifier: 'IC-1', title: 'Title', stateType: type, stateName: name }),
+      `IC-1  ${icon ? `${icon} ` : ''}${name}  Title`);
+  });
+}
+
+test('row colors only the icon and includes the project and owner', () => {
+  const issue = { identifier: 'IC-1516', title: 'Title', stateType: 'started', stateName: 'In Progress',
+    stateColor: '#aB12ff', project: 'Project', assignee: 'owner' };
+  assert.equal(formatLine(issue), 'IC-1516  \x1b[38;2;171;18;255m◐\x1b[0m In Progress  Title  [Project] @owner');
+  for (const stateColor of [undefined, '', '#fff', 'red', '#gg0000', '#1234567']) {
+    assert.equal(formatLine({ ...issue, stateColor }).includes('\x1b'), false);
+  }
+  assert.equal(lineToIssue(formatLine(issue), [issue]), issue);
+});
+
+test('row truncates titles at 60 code points', () => {
+  for (const letter of ['a', '😀']) {
+    assert.equal(formatLine({ identifier: 'IC-1', title: letter.repeat(61) }), `IC-1  ${letter.repeat(59)}…`);
+    assert.equal(formatLine({ identifier: 'IC-1', title: letter.repeat(60) }), `IC-1  ${letter.repeat(60)}`);
+  }
+});
+
+async function pick(query, row, options = {}, status = 0, issues = ISSUES) {
+  return select(issues, { ...options, exec: (cmd, args, opts) => {
+    if (cmd === 'sh') return { status: 0 };
+    assert.equal(cmd, 'fzf');
+    for (const flag of ['--ansi', '--print-query', '--bind', 'enter:accept-or-print-query']) assert.ok(args.includes(flag));
+    assert.equal(opts.input, formatLines(issues).join('\n'));
+    return { status, stdout: `${query}\n${row ? formatLine(row) : query}\n` };
+  } });
+}
+
+test('full ID wins over another highlighted row and accepts lowercase', async () => {
+  assert.equal(await pick('BIT-990', ISSUES[1]), ISSUES[0]);
+  assert.equal(await pick('bit-990', ISSUES[1]), ISSUES[0]);
+  assert.equal(await pick('ic-1516', ISSUES[1]), 'IC-1516');
+});
+
+test('bare numbers use the configured team only without a selected row', async () => {
+  assert.equal(await pick('1516', null, { idTeamKey: 'ic', teamKey: 'BIT' }), 'IC-1516');
+  assert.equal(await pick('1516', null, { teamKey: 'BIT' }), 'BIT-1516');
+  assert.equal(await pick('1516', null), null);
+  assert.equal(await pick('1516', ISSUES[1], { idTeamKey: 'IC' }), ISSUES[1]);
+  assert.equal(await pick('title', ISSUES[1]), ISSUES[1]);
+});
+
+test('empty lists permit ID lookup and Esc or Ctrl-C cancels', async () => {
+  assert.equal(await pick('ic-1516', null, {}, 0, []), 'IC-1516');
+  assert.equal(await pick('IC-1516', null, {}, 130), null);
+  assert.equal(await pick('', null), null);
+});
+
+test('numbered fallback accepts IDs and keeps row numbers ahead of team lookup', async () => {
+  for (const [answer, options, expected] of [
+    ['bit-990', {}, ISSUES[0]], ['ic-1516', {}, 'IC-1516'],
+    ['1516', { idTeamKey: 'IC', teamKey: 'BIT' }, 'IC-1516'],
+    ['1516', { teamKey: 'BIT' }, 'BIT-1516'], ['1516', {}, null],
+    ['2', { idTeamKey: 'IC' }, ISSUES[1]], ['', {}, null],
+  ]) {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const pending = nodeSelect(ISSUES, formatLines(ISSUES), undefined, { input, output, identifiers: true, ...options });
+    input.end(`${answer}\n`);
+    assert.equal(await pending, expected);
+  }
+});
+
+test('select uses the numbered fallback without fzf', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const pending = select([], { exec: () => ({ status: 1 }), input, output });
+  input.end('ic-1516\n');
+  assert.equal(await pending, 'IC-1516');
+});
+
+test('unknown inherited state names still have no icon', () => {
+  assert.equal(formatLine({ identifier: 'IC-1', title: 'Title', stateType: 'constructor', stateName: 'Other' }), 'IC-1  Other  Title');
+});
+
+test('numbered fallback cancels when input closes', async () => {
+  const input = new PassThrough();
+  const pending = nodeSelect([], [], undefined, { input, output: new PassThrough(), identifiers: true });
+  input.end();
+  assert.equal(await pending, null);
 });

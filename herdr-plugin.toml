@@ -17,6 +17,12 @@ title = "Start agent on Linear issue"
 contexts = ["workspace", "tab", "pane"]
 command = ["node", "bin/open.js", "--start"]
 
+[[actions]]
+id = "show"
+title = "Show Linear issue here"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "bin/open.js", "--show"]
+
 [[panes]]
 id = "picker"
 title = "Pick a Linear issue"

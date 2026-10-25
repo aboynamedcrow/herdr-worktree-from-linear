@@ -25,7 +25,7 @@ function withEnvKey(value, fn) {
 
 test('loadConfig merges defaults and keeps the api key', () => {
   const dir = withDir('{"linearApiKey":"k"}');
-  assert.deepEqual(loadConfig(dir), { issueLimit: 50, fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
+  assert.deepEqual(loadConfig(dir), { issueLimit: 500, fzfLayout: 'down', showIssueDetails: false, linearApiKey: 'k' });
   rmSync(dir, { recursive: true, force: true });
 });
 
