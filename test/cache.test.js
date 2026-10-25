@@ -18,7 +18,8 @@ const deferred = () => {
 const NOW = Date.parse('2026-10-24T12:00:00Z');
 const OLD = { identifier: 'BIT-1', title: 'Old title', branchName: 'old', teamKey: 'BIT' };
 const LIVE = { ...OLD, title: 'Live title', branchName: 'live' };
-const node = (row) => ({ identifier: row.identifier, title: row.title, branchName: row.branchName, team: { key: row.teamKey } });
+const node = (row) => ({ identifier: row.identifier, title: row.title, createdAt: row.createdAt,
+  branchName: row.branchName, team: { key: row.teamKey }, state: { type: row.stateType, name: row.stateName, color: row.stateColor } });
 const reply = (data) => ({ ok: true, text: async () => JSON.stringify({ data }) });
 
 function fixture(t, config = {}) {
@@ -97,6 +98,86 @@ function startRun(t, f, picker, fetchFn, extra = {}) {
   const pending = run({ env: f.env, exec, fetchFn, now: () => NOW,
     pickerOptions: picker, log: (message) => logs.push(message), ...extra });
   return { pending, calls, logs };
+}
+
+const SORT_ROWS = [
+  { ...OLD, identifier: 'BIT-1', stateType: 'completed', stateName: 'Done', createdAt: '2026-09-01T00:00:00Z' },
+  { ...OLD, identifier: 'BIT-2', stateType: 'started', stateName: 'In Progress', createdAt: '2026-10-02T00:00:00Z' },
+  { ...OLD, identifier: 'BIT-3', stateType: 'started', stateName: 'In Review', createdAt: '2026-10-03T00:00:00Z' },
+  { ...OLD, identifier: 'BIT-4', stateType: 'started', stateName: 'In Progress', createdAt: '2026-10-01T00:00:00Z' },
+];
+const SORT_IDS = ['BIT-3', 'BIT-4', 'BIT-2', 'BIT-1'];
+const lineIds = (text) => text.split('\n').map((line) => line.split(/\s+/)[0]);
+
+test('cached rows and live reload use the same state and creation order', async (t) => {
+  const f = fixture(t);
+  f.cache.write(SORT_ROWS);
+  const fetched = deferred();
+  const picker = fakeFzf(t, { status: 130 });
+  const job = startRun(t, f, picker, () => fetched.promise);
+  await picker.started;
+  assert.deepEqual(lineIds(picker.state.initial), SORT_IDS);
+  assert.ok(picker.state.argv.includes('--height=100%'));
+  fetched.resolve(reply({ issues: { nodes: [...SORT_ROWS].reverse().map(node) } }));
+  await picker.changed;
+  assert.deepEqual(lineIds(picker.state.rows), SORT_IDS);
+  assert.equal(picker.state.rows, picker.state.initial);
+  assert.deepEqual(f.cache.read().rows.map((row) => row.identifier), SORT_IDS);
+  picker.close();
+  assert.equal(await job.pending, 0);
+});
+
+test('cache version 2 preserves createdAt and version 1 waits for a fetch before opening', async (t) => {
+  const f = fixture(t);
+  f.cache.write(SORT_ROWS);
+  assert.deepEqual(f.cache.read().rows.map((row) => row.createdAt), SORT_ROWS.map((row) => row.createdAt));
+  const data = JSON.parse(readFileSync(f.cache.path, 'utf8'));
+  assert.equal(data.version, 2);
+  data.version = 1;
+  writeFileSync(f.cache.path, JSON.stringify(data));
+  assert.equal(f.cache.read(), null);
+  const fetched = deferred();
+  let opened = false;
+  const job = startRun(t, f, {}, () => fetched.promise, { select: async (rows, options) => {
+    opened = true;
+    assert.deepEqual(rows.map((row) => row.identifier), SORT_IDS);
+    assert.equal(options.header, 'live');
+    assert.equal(options.refresh, undefined);
+    return null;
+  } });
+  assert.equal(opened, false);
+  fetched.resolve(reply({ issues: { nodes: SORT_ROWS.map(node) } }));
+  assert.equal(await job.pending, 0);
+  assert.equal(opened, true);
+  assert.equal(JSON.parse(readFileSync(f.cache.path, 'utf8')).version, 2);
+});
+
+for (const cached of [false, true]) {
+  test(`numbered prompt uses the sorted ${cached ? 'cached' : 'first live'} rows`, async (t) => {
+    const f = fixture(t);
+    if (cached) f.cache.write(SORT_ROWS);
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const prompted = deferred();
+    let text = '';
+    output.on('data', (chunk) => { text += chunk; if (text.includes('(blank cancels): ')) prompted.resolve(); });
+    const tasks = [];
+    const pending = run({ env: f.env, now: () => NOW, log: () => {}, pickerOptions: { input, output },
+      exec: (cmd, args) => {
+        if (cmd === 'git') return { status: 0, stdout: 'worktree /repo\n' };
+        if (cmd === 'sh') return { status: 1 };
+        if (cmd === '/task') tasks.push(args);
+        else assert.equal(args[0], 'notification');
+        return { status: 0 };
+      }, fetchFn: async (_url, options) => JSON.parse(options.body).variables.id
+        ? reply({ issue: node(SORT_ROWS[2]) }) : reply({ issues: { nodes: SORT_ROWS.map(node) } }),
+    });
+    await prompted.promise;
+    assert.deepEqual([...text.matchAll(/\d\) (BIT-\d+)/g)].map((match) => match[1]), SORT_IDS);
+    input.end('1\n');
+    assert.equal(await pending, 0);
+    assert.deepEqual(tasks, [['new', 'BIT-3 [M]']]);
+  });
 }
 
 test('cache hit opens cached rows before fetch completion and reloads once without changing the query', async (t) => {

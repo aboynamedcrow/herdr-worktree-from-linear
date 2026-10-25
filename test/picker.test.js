@@ -1,12 +1,82 @@
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatLine, formatLines, lineToIssue, fzfArgs, selectWorktree, select, nodeSelect } from '../lib/picker.js';
+import { formatLine, formatLines, lineToIssue, fzfArgs, selectWorktree, select, nodeSelect, sortIssues } from '../lib/picker.js';
 
 test('fzfArgs adds --layout=reverse only for the top layout', () => {
-  assert.deepEqual(fzfArgs('top'), ['--layout=reverse', '--height=~40%', '--prompt', 'issue> ']);
-  assert.deepEqual(fzfArgs('down'), ['--height=~40%', '--prompt', 'issue> ']);
-  assert.deepEqual(fzfArgs(undefined), ['--height=~40%', '--prompt', 'issue> ']);
+  assert.deepEqual(fzfArgs('top'), ['--layout=reverse', '--height=100%', '--prompt', 'issue> ']);
+  assert.deepEqual(fzfArgs('down'), ['--height=100%', '--prompt', 'issue> ']);
+  assert.deepEqual(fzfArgs(undefined), ['--height=100%', '--prompt', 'issue> ']);
+  assert.deepEqual(fzfArgs('top', 'worktree> ', '~40%'), ['--layout=reverse', '--height=~40%', '--prompt', 'worktree> ']);
+  assert.deepEqual(fzfArgs('down', 'worktree> ', '~40%'), ['--height=~40%', '--prompt', 'worktree> ']);
+});
+
+test('sortIssues ranks every state and puts older creation dates first within a rank', () => {
+  const states = [
+    ['started', 'In Review'], ['started', 'In Progress'], ['started', 'Building'],
+    ['triage', 'Triage'], ['unstarted', 'Todo'], ['backlog', 'Backlog'],
+    ['completed', 'Done'], ['canceled', 'Canceled'], ['duplicate', 'Duplicate'], ['unknown', 'Other'],
+  ];
+  const ranked = states.map(([stateType, stateName], i) => ({
+    identifier: `IC-${i + 1}`, stateType, stateName, createdAt: '2026-10-01T00:00:00Z',
+  }));
+  const rows = [...ranked].reverse();
+  const before = [...rows];
+  assert.deepEqual(sortIssues(rows), ranked);
+  assert.deepEqual(rows, before, 'sorting does not change the input array');
+
+  const row = (identifier, createdAt) => ({ identifier, createdAt, stateType: 'backlog' });
+  const dates = [row('missing-1'), row('new', '2026-10-02T00:00:00Z'), row('empty', ''),
+    row('old-1', '2026-10-01T00:00:00Z'), row('invalid', 'invalid'),
+    row('old-2', '2026-10-01T01:00:00+01:00'), row('missing-2')];
+  assert.deepEqual(sortIssues(dates).map((issue) => issue.identifier),
+    ['old-1', 'old-2', 'new', 'missing-1', 'empty', 'invalid', 'missing-2']);
+  assert.deepEqual(sortIssues([]), []);
+});
+
+test('sortIssues uses review names without case and the exact In Progress name', () => {
+  const rows = ['Other', 'in progress', 'In Progress', 'Security REVIEW'].map((stateName) => ({ stateType: 'started', stateName }));
+  assert.deepEqual(sortIssues(rows).map((row) => row.stateName), ['Security REVIEW', 'In Progress', 'Other', 'in progress']);
+  const unknown = [{ stateType: 'constructor' }, {}, { stateType: '' }];
+  assert.deepEqual(sortIssues([...unknown, { stateType: 'duplicate' }]), [{ stateType: 'duplicate' }, ...unknown]);
+});
+
+test('formatLines aligns title columns by code points with colored and plain states', () => {
+  for (const stateColor of [undefined, '#123456']) {
+    const issues = [
+      { identifier: 'IC-12', stateType: 'unstarted', stateName: 'Todo', title: 'First', stateColor },
+      { identifier: 'IC-1234', stateType: 'started', stateName: 'In Progress', title: 'Second' },
+      { identifier: 'IC-13', title: 'Third' },
+    ];
+    const lines = formatLines(issues);
+    const plain = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+    assert.deepEqual(plain, ['IC-12    ○ Todo         First', 'IC-1234  ◐ In Progress  Second', `IC-13${' '.repeat(19)}Third`]);
+    assert.deepEqual(plain.map((line, i) => Array.from(line.slice(0, line.indexOf(issues[i].title))).length), [24, 24, 24]);
+    assert.equal(lines[0].includes('\x1b'), Boolean(stateColor));
+    assert.equal(lineToIssue(lines[0], issues), issues[0]);
+  }
+  const unicode = formatLines([
+    { identifier: 'IC-1', stateName: '😀', title: 'First' },
+    { identifier: 'IC-2', stateName: 'xx', title: 'Second' },
+  ]);
+  assert.deepEqual(unicode, ['IC-1  😀   First', 'IC-2  xx  Second']);
+  assert.deepEqual(formatLines([]), []);
+});
+
+test('both pickers pass the required height and layout to fzf', async () => {
+  for (const layout of ['top', 'down']) {
+    for (const worktree of [false, true]) {
+      const candidate = { id: 'a'.repeat(64), branch: 'branch', path: '/a', source: 'local', start_commit: 'f'.repeat(40) };
+      const exec = (cmd, args) => {
+        if (cmd === 'sh') return { status: 0 };
+        assert.equal(cmd, 'fzf');
+        assert.equal(args.includes('--layout=reverse'), layout === 'top');
+        assert.ok(args.includes(worktree ? '--height=~40%' : '--height=100%'));
+        return { status: 130 };
+      };
+      assert.equal(await (worktree ? selectWorktree([candidate], { layout, exec }) : select([], { layout, exec })), null);
+    }
+  }
 });
 
 const ISSUES = [

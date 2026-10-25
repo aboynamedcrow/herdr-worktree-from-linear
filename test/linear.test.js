@@ -68,7 +68,7 @@ test('buildIssuesBody includes the triage state only when includeTriage', () => 
 test('parseIssues maps nodes and defaults missing fields', () => {
   const issues = parseIssues(SAMPLE);
   assert.equal(issues.length, 2);
-  assert.deepEqual(issues[0], { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', stateName: 'In Progress', stateType: '', stateColor: '', project: '', assignee: 'Darek', teamKey: 'BIT' });
+  assert.deepEqual(issues[0], { identifier: 'BIT-990', title: 'Label API keys', createdAt: '', branchName: 'tdi/bit-990-label', url: 'u1', stateName: 'In Progress', stateType: '', stateColor: '', project: '', assignee: 'Darek', teamKey: 'BIT' });
   assert.equal(issues[1].assignee, '');
 });
 
@@ -86,6 +86,20 @@ test('listIssues posts with auth header and returns records', async () => {
   assert.equal(calls[0].url, 'https://api.linear.app/graphql');
   assert.equal(calls[0].opts.method, 'POST');
   assert.equal(calls[0].opts.headers.Authorization, 'k');
+});
+
+test('picker list requests and parses createdAt without changing the updatedAt limit', async () => {
+  const createdAt = '2026-10-01T00:00:00.000Z';
+  const issues = await listIssues({ linearApiKey: 'k', issueLimit: 1 }, async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.match(body.query, /title createdAt/);
+    assert.match(body.query, /orderBy: updatedAt/);
+    assert.equal(body.variables.first, 1);
+    return reply({ data: { issues: { nodes: [
+      { identifier: 'IC-1', createdAt }, { identifier: 'IC-2', createdAt: '2026-09-01T00:00:00.000Z' },
+    ] } } });
+  });
+  assert.deepEqual(issues.map((row) => [row.identifier, row.createdAt]), [['IC-1', createdAt]]);
 });
 
 test('listIssues throws on non-2xx', async () => {
@@ -314,9 +328,11 @@ test('picker ID lookup asks for row fields and resolves old team keys', async ()
     assert.match(body.query, /state \{ name type color \}/);
     assert.match(body.query, /project \{ name \}/);
     assert.match(body.query, /branchName/);
-    return reply({ data: { issue: { identifier: 'NEW-1', branchName: 'new', state: { name: 'Done', type: 'completed', color: '#123456' }, project: { name: 'Project' } } } });
+    assert.match(body.query, /createdAt/);
+    return reply({ data: { issue: { identifier: 'NEW-1', createdAt: '2026-10-01T00:00:00Z', branchName: 'new', state: { name: 'Done', type: 'completed', color: '#123456' }, project: { name: 'Project' } } } });
   });
   assert.equal(calls, 1);
+  assert.equal(issue.createdAt, '2026-10-01T00:00:00Z');
   assert.deepEqual([issue.identifier, issue.stateType, issue.stateColor, issue.project, issue.branchName], ['NEW-1', 'completed', '#123456', 'Project', 'new']);
 });
 
