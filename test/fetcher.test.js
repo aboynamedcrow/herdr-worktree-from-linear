@@ -47,6 +47,15 @@ function linearStub() {
   };
 }
 
+// A host polls every 2 s and its leader ticks every 10 s. Walk the clock there in ticks,
+// so the heartbeat stays fresh the way it does in a running pane.
+async function tickTo(fetcher, clock, time) {
+  while (clock.time < time) {
+    clock.time = Math.min(time, clock.time + 10000);
+    await fetcher.step();
+  }
+}
+
 function hostAt({ dir, pid, clock, live, linear, alive = (value) => live.has(value), wants = ['IC-1'] }) {
   const changes = [];
   const fetcher = createSharedFetcher({
@@ -103,20 +112,66 @@ test('a leader displaced during a slow fetch writes neither the cache nor the lo
   assert.deepEqual(readdirSync(dir), ['issues.json']);
 });
 
-test('a leader whose slow fetch succeeds keeps the lock when nobody took it', async (t) => {
+test('a leader whose slow fetch succeeds inside its lease keeps the lock when nobody took it', async (t) => {
   const dir = sharedDir(t);
   const clock = { time: 1000 };
   const linear = linearStub();
   const a = hostAt({ dir, pid: 11, clock, live: new Set([11]), linear });
   await a.fetcher.step();
+  // A leader renews its heartbeat on each tick, also when nothing is due.
+  await tickTo(a.fetcher, clock, 291000);
+  assert.equal(readJson(join(dir, 'leader.json')).beat, clock.time);
+  assert.equal(linear.log.length, 2, 'nothing was due yet');
   const stalled = linear.hold();
-  clock.time += 300000;
+  clock.time += 10000;
   const slowStep = a.fetcher.step();
   clock.time += 30000;
   stalled.resolve(new Map([['IC-1', 'one']]));
   await slowStep;
   assert.equal(a.fetcher.role(), 'leader');
   assert.equal(readJson(join(dir, 'leader.json')).beat, clock.time, 'the heartbeat is the time the step ended, not when it began');
+});
+
+test('a leader whose own lease ran out during the fetch writes nothing, then leads and writes on its next step', async (t) => {
+  const dir = sharedDir(t);
+  const clock = { time: 1000 };
+  const linear = linearStub();
+  const a = hostAt({ dir, pid: 11, clock, live: new Set([11]), linear });
+  await a.fetcher.step();
+  await tickTo(a.fetcher, clock, 291000);
+  const lockBefore = readFileSync(join(dir, 'leader.json'), 'utf8');
+  const cacheBefore = readFileSync(join(dir, 'issues.json'), 'utf8');
+  assert.equal(JSON.parse(lockBefore).beat, 291000);
+  assert.equal(JSON.parse(cacheBefore).issues['IC-1'].issue.title, 'one');
+  assert.equal(linear.log.length, 2, 'nothing was due yet');
+
+  // The fetch is due at five minutes and then spans 100 s: longer than the 90 s lease.
+  // Nobody else is there to take the lock. The lock is still A's own, and stale.
+  const stalled = linear.hold();
+  clock.time += 10000;
+  const slowStep = a.fetcher.step();
+  linear.set('IC-1', 'two');
+  clock.time += 100000;
+  stalled.resolve(new Map([['IC-1', 'two']]));
+  await slowStep;
+  assert.deepEqual(linear.log.slice(2), [['probe', ['IC-1']], ['full', ['IC-1']]], 'the change was fetched');
+  assert.equal(a.fetcher.role(), 'follower');
+  assert.equal(readFileSync(join(dir, 'leader.json'), 'utf8'), lockBefore, 'no heartbeat');
+  assert.equal(readFileSync(join(dir, 'issues.json'), 'utf8'), cacheBefore, 'no cache write');
+  assert.equal(a.fetcher.snapshot().issues.get('IC-1').title, 'one', 'the unpublished result is given back');
+  assert.equal(a.changes.length, 1, 'no change was announced');
+
+  // The next step takes the stale lock again, fetches again, and writes.
+  clock.time += 2000;
+  await a.fetcher.step();
+  assert.equal(a.fetcher.role(), 'leader');
+  assert.deepEqual(linear.log.slice(4), [['probe', ['IC-1']], ['full', ['IC-1']]]);
+  assert.equal(readJson(join(dir, 'leader.json')).pid, 11);
+  assert.equal(readJson(join(dir, 'leader.json')).beat, clock.time);
+  assert.equal(readJson(join(dir, 'issues.json')).issues['IC-1'].issue.title, 'two');
+  assert.equal(a.fetcher.snapshot().issues.get('IC-1').title, 'two');
+  assert.equal(a.changes.length, 2);
+  assert.deepEqual(readdirSync(dir).sort(), ['host-11.json', 'issues.json', 'leader.json']);
 });
 
 test('two followers that read the same stale lock: the second keeps the fresh lock of the first', async (t) => {

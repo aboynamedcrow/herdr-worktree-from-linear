@@ -41,7 +41,8 @@ remains in the list. All hosts of one user on one Mac share one Linear fetcher. 
 README section "One Linear fetcher per Mac" describes its files and its lock. The
 leader host probes `updatedAt` for every shown ID in one bounded GraphQL call per
 credential. It probes every 60 s for an ID in a focused pane or an open full view,
-and every 5 min otherwise. Each ID keeps its own schedule from its first fetch. It
+and every 5 min otherwise. Each ID keeps its own schedule from its first fetch. A
+focused pane costs up to 60 probes per hour for each distinct schedule among its IDs. It
 requests full details, one call per credential, only when a probe finds a changed ID
 or an ID with no cache entry. `r` fetches now. Mixed Linear workspaces need separate
 calls. A failed call keeps the last good details. A delivered ID outside the list stays selected until the list
