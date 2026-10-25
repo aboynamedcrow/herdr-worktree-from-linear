@@ -70,6 +70,38 @@ test('run selects the Linear API key using the resolved repo root', async () => 
   rmSync(dir, { recursive: true, force: true });
 });
 
+// A linked checkout and its main checkout can match different key rules. The key
+// follows the invoking checkout, as it did before main-worktree selection.
+test('run selects the Linear API key from the linked checkout, not the main worktree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wfl-run-'));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({
+    linearApiKeyEnvByPath: [{ contains: 'hsys', env: 'LINEAR_API_KEY_MATCH' }],
+    linearApiKeyEnvDefault: 'LINEAR_API_KEY_DEFAULT',
+  }));
+  const { exec: baseExec, calls } = fakeExec();
+  const exec = (cmd, args = []) => {
+    if (cmd === 'git' && args.includes('--porcelain')) {
+      return { status: 0, stdout: 'worktree /repos/shared-api\nHEAD abc\n\nworktree /worktrees/hsys/shared-api\nHEAD def\n', stderr: '' };
+    }
+    return baseExec(cmd, args);
+  };
+  const fetchFn = async (_url, options) => {
+    assert.equal(options.headers.Authorization, 'test-key-1');
+    return { ok: true, status: 200, text: async () => SAMPLE };
+  };
+  const env = {
+    HERDR_PLUGIN_CONFIG_DIR: dir,
+    HERDR_WFP_CWD: '/worktrees/hsys/shared-api',
+    HERDR_BIN_PATH: 'herdr',
+    LINEAR_API_KEY_MATCH: 'test-key-1',
+    LINEAR_API_KEY_DEFAULT: 'test-key-default',
+  };
+  assert.equal(await run({ env, exec, fetchFn, select: async (list) => list[0], log: () => {} }), 0);
+  const plan = calls.find((c) => c[1] === 'plan-worktree');
+  assert.deepEqual(plan.slice(2, 4), ['--cwd', '/repos/shared-api']);   // Plus still plans from main.
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // Native replies in the shape herdr 0.9.0 prints them, for the slot delivery path.
 const WS = 'w9';
 const TAB = 'w9:t1';

@@ -18,7 +18,7 @@ test('resolveRepo prefers HERDR_WFP_CWD over context JSON', () => {
     if (cmd === 'git' && args.includes('--porcelain')) { seen.push(args.join(' ')); return { status: 0, stdout: 'worktree /explicit/repo\nHEAD abc\nbranch refs/heads/main\n', stderr: '' }; }
     return { status: 1, stdout: '', stderr: '' };
   };
-  assert.deepEqual(resolveRepo(env, exec), { repoRoot: '/explicit/repo' });
+  assert.deepEqual(resolveRepo(env, exec), { repoRoot: '/explicit/repo', checkoutRoot: '/explicit/repo' });
   assert.ok(seen[0].includes('-C /explicit/repo'));
 });
 
@@ -39,7 +39,11 @@ test('resolveRepo returns the main worktree root when invoked from a linked work
   const exec = (cmd, args) => (cmd === 'git' && args.includes('--porcelain')
     ? { status: 0, stdout: porcelain, stderr: '' }
     : { status: 1, stdout: '', stderr: '' });
-  assert.deepEqual(resolveRepo({ HERDR_WFP_CWD: linked }, exec), { repoRoot: '/Users/x/projects/repo' });
+  assert.deepEqual(resolveRepo({ HERDR_WFP_CWD: linked }, exec), { repoRoot: '/Users/x/projects/repo', checkoutRoot: linked });
+  // A subdirectory keeps its checkout. A nested linked worktree wins over its parent.
+  assert.equal(resolveRepo({ HERDR_WFP_CWD: `${linked}/src` }, exec).checkoutRoot, linked);
+  assert.equal(resolveRepo({ HERDR_WFP_CWD: '/Users/x/projects/repo/lib' }, exec).checkoutRoot, '/Users/x/projects/repo');
+  assert.equal(resolveRepo({ HERDR_WFP_CWD: '/Users/x/projects/repo-2' }, exec).checkoutRoot, '/Users/x/projects/repo-2');
 });
 
 test('resolveRepo throws when not a git repo', () => {
