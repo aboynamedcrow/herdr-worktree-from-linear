@@ -137,6 +137,15 @@ function host({ linear, clock, dir = null, pid = 11, live = new Set([11, 12]), i
 }
 
 const clockAt = (time = 1000) => ({ time, advance(ms) { this.time += ms; } });
+// Walk the clock in 10 s ticks and poll at each, as running panes do. A leader's heartbeat
+// is a 90 s lease, so a jump of more than that in one step would make it give the lock back.
+async function tickBy(clock, ms, ...polls) {
+  const end = clock.time + ms;
+  while (clock.time < end) {
+    clock.time = Math.min(end, clock.time + 10000);
+    for (const poll of polls) await poll();
+  }
+}
 const requests = (log) => log.map((entry) => [entry.kind, entry.ids]);
 
 test('a list change fetches the new ids, and a quiet list makes no request', async () => {
@@ -365,17 +374,18 @@ test('the leader uses the rate each issue wants across hosts', async (t) => {
   clock.advance(50000);
   await pollBoth();
   assert.deepEqual(requests(linear.log).slice(4), [['probe', ['IC-1']]], 'the focused host\'s id is fast, the other is not');
-  clock.advance(250000);
+  await tickBy(clock, 240000, pollBoth);
+  assert.deepEqual(requests(linear.log).slice(5).map(([, ids]) => ids), [['IC-1'], ['IC-1'], ['IC-1'], ['IC-1']], 'the fast id is probed each minute');
+  clock.advance(10000);
   await pollBoth();
-  assert.deepEqual(requests(linear.log).slice(5), [['probe', ['IC-1', 'IC-2']]], 'both are due at five minutes');
+  assert.deepEqual(requests(linear.log).slice(9), [['probe', ['IC-2']]], 'the slow id is due at five minutes');
   // The background host opens its full view: its id becomes fast in the leader.
   await background.mode.setFull('IC-2');
   clock.advance(60000);
   await pollBoth();
-  assert.deepEqual(requests(linear.log).slice(6), [['probe', ['IC-1', 'IC-2']]]);
+  assert.deepEqual(requests(linear.log).slice(10), [['probe', ['IC-1', 'IC-2']]]);
   // A host that stops polling is forgotten once its interest is older than five minutes.
-  clock.advance(300001);
-  await focused.mode.poll();
+  await tickBy(clock, 360000, () => focused.mode.poll());
   assert.deepEqual(requests(linear.log).at(-1), ['probe', ['IC-1']]);
   assert.equal(existsSync(join(dir, 'host-12.json')), true, 'a live but silent host keeps its file');
 });
@@ -413,8 +423,7 @@ test('a follower takes over when the leader exits, or when its process is gone',
   assert.equal(JSON.parse(readFileSync(join(dir, 'leader.json'), 'utf8')).pid, 13);
   assert.equal(c.mode.view().issues.get('IC-3').title, 'Title IC-3');
   // The dead host's interest is dropped: after its grace period, nothing probes IC-2.
-  clock.advance(600000);
-  await c.mode.poll();
+  await tickBy(clock, 600000, () => c.mode.poll());
   assert.deepEqual(requests(linear.log).at(-1), ['probe', ['IC-3']]);
   assert.equal(existsSync(join(dir, 'host-12.json')), false, 'the dead host\'s interest file is removed');
   // An old leader that is still alive, but silent for too long, is replaced as well.
