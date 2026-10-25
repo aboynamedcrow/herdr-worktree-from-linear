@@ -112,8 +112,8 @@ async function pick(query, row, options = {}, status = 0, issues = ISSUES) {
 }
 
 test('full ID wins over another highlighted row and accepts lowercase', async () => {
-  assert.equal(await pick('BIT-990', ISSUES[1]), ISSUES[0]);
-  assert.equal(await pick('bit-990', ISSUES[1]), ISSUES[0]);
+  assert.equal(await pick('BIT-990', ISSUES[1]), 'BIT-990');
+  assert.equal(await pick('bit-990', ISSUES[1]), 'BIT-990');
   assert.equal(await pick('ic-1516', ISSUES[1]), 'IC-1516');
 });
 
@@ -123,6 +123,12 @@ test('bare numbers use the configured team only without a selected row', async (
   assert.equal(await pick('1516', null), null);
   assert.equal(await pick('1516', ISSUES[1], { idTeamKey: 'IC' }), ISSUES[1]);
   assert.equal(await pick('title', ISSUES[1]), ISSUES[1]);
+  assert.equal(await pick('1516', ISSUES[1]), ISSUES[1]);
+});
+
+test('a bare number with a team keeps the highlighted issue instead of another exact ID', async () => {
+  const highlighted = { ...ISSUES[0], identifier: 'IC-1545' };
+  assert.equal(await pick('154', highlighted, { idTeamKey: 'IC' }, 0, [highlighted]), highlighted);
 });
 
 test('empty lists permit ID lookup and Esc or Ctrl-C cancels', async () => {
@@ -133,7 +139,7 @@ test('empty lists permit ID lookup and Esc or Ctrl-C cancels', async () => {
 
 test('numbered fallback accepts IDs and keeps row numbers ahead of team lookup', async () => {
   for (const [answer, options, expected] of [
-    ['bit-990', {}, ISSUES[0]], ['ic-1516', {}, 'IC-1516'],
+    ['bit-990', {}, 'BIT-990'], ['ic-1516', {}, 'IC-1516'],
     ['1516', { idTeamKey: 'IC', teamKey: 'BIT' }, 'IC-1516'],
     ['1516', { teamKey: 'BIT' }, 'BIT-1516'], ['1516', {}, null],
     ['2', { idTeamKey: 'IC' }, ISSUES[1]], ['', {}, null],

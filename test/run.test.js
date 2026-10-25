@@ -5,12 +5,15 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../lib/run.js';
+import { issueCache, loadListConfig } from '../lib/cache.js';
 import { plusFixture } from './support/plus-fixture.js';
 import { HOST_SCRIPT, checkoutDigest } from '../lib/hostwire.js';
 
-const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
-  { identifier: 'BIT-1', title: 'Do it', branchName: 'tdi/bit-1-do-it', url: 'u', state: { name: 'Todo' }, assignee: { displayName: 'D' }, team: { key: 'BIT' } },
-] } } });
+const SAMPLE_NODE = { identifier: 'BIT-1', title: 'Do it', branchName: 'tdi/bit-1-do-it', url: 'u', state: { name: 'Todo' }, assignee: { displayName: 'D' }, team: { key: 'BIT' } };
+const SAMPLE = JSON.stringify({ data: { issues: { nodes: [SAMPLE_NODE] } } });
+const sampleText = (options) => JSON.parse(options.body).variables.id
+  ? JSON.stringify({ data: { issue: SAMPLE_NODE } }) : SAMPLE;
+const sampleFetch = async (_url, options) => ({ ok: true, status: 200, text: async () => sampleText(options) });
 
 function keyDir(config = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wfl-run-'));
@@ -33,7 +36,7 @@ function fakeExec() {
 test('run delegates identifier and title to the shared policy and applies its choice', async () => {
   const dir = keyDir();
   const { exec, calls } = fakeExec();
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
   assert.equal(code, 0);
   const plan = calls.find((c) => c[1] === 'plan-worktree');
@@ -87,7 +90,7 @@ test('run selects the Linear API key from the linked checkout, not the main work
   };
   const fetchFn = async (_url, options) => {
     assert.equal(options.headers.Authorization, 'test-key-1');
-    return { ok: true, status: 200, text: async () => SAMPLE };
+    return { ok: true, status: 200, text: async () => sampleText(options) };
   };
   const env = {
     HERDR_PLUGIN_CONFIG_DIR: dir,
@@ -216,7 +219,7 @@ async function runWithSlot(dir, { exec, select = async (list) => list[0], log = 
       HERDR_PLUGIN_ID: 'tdi.worktree-from-linear', HERDR_SOCKET_PATH: socketPath,
     },
     exec,
-    fetchFn: async () => ({ ok: true, status: 200, text: async () => SAMPLE }),
+    fetchFn: sampleFetch,
     select,
     log,
   });
@@ -358,7 +361,7 @@ test('run is a no-op when there are no issues', async () => {
 test('run is a no-op when the user cancels', async () => {
   const dir = keyDir();
   const { exec, calls } = fakeExec();
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec, fetchFn, select: async () => null, log: () => {} });
   assert.equal(code, 0);
   assert.equal(calls.some((c) => c.includes('fetch')), false);
@@ -368,7 +371,7 @@ test('run is a no-op when the user cancels', async () => {
 test('run routes the worktree to the repo mapped to the issue team', async () => {
   const dir = keyDir({ repos: { BIT: '/mapped-repo' } });
   const { exec, calls } = fakeExec();
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
   assert.equal(code, 0);
   const create = calls.find((c) => c[1] === 'plan-worktree');
@@ -380,7 +383,7 @@ test('run routes the worktree to the repo mapped to the issue team', async () =>
 test('run falls back to the invoking repo for an unmapped team', async () => {
   const dir = keyDir({ repos: { OTHER: '/elsewhere' } });
   const { exec, calls } = fakeExec();
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
   assert.equal(code, 0);
   assert.ok(calls.find((c) => c[1] === 'plan-worktree').includes('/repo'));
@@ -390,7 +393,7 @@ test('run falls back to the invoking repo for an unmapped team', async () => {
 test('run labels the new workspace with the issue identifier', async () => {
   const dir = keyDir();
   const { exec, calls } = fakeExec();
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (l) => l[0], log: () => {} });
   const report = calls.find((c) => c.includes('report-metadata'));
   assert.ok(report, 'reports workspace metadata');
@@ -405,7 +408,7 @@ test('run still succeeds when the sidebar label cannot be reported', async () =>
   const exec = (cmd, args = []) => (args[0] === 'workspace'
     ? { status: 2, stdout: '', stderr: 'unrecognized subcommand\n' }
     : inner(cmd, args));
-  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const fetchFn = sampleFetch;
   const warnings = [];
   const logs = [];
   const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec, fetchFn, select: async (l) => l[0], log: (m) => logs.push(m), warn: (m) => warnings.push(m) });
@@ -420,7 +423,7 @@ test('cancelling the shared candidate picker never applies or delivers', async (
   const { exec, calls } = fakeExec();
   try {
     assert.equal(await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
-      fetchFn: async () => ({ ok: true, status: 200, text: async () => SAMPLE }),
+      fetchFn: sampleFetch,
       select: async (list) => ({ ...list[0], branchName: undefined }), selectWorktree: async () => null, log: () => {},
     }), 0);
     assert.ok(calls.some((c) => c[1] === 'plan-worktree'));
@@ -467,10 +470,11 @@ test('run loads a missing lowercase ID once with its team key', async (t) => {
   assert.ok(result.calls.some((call) => call[0] === '/task' && call.includes('IC-1516 [M]')));
 });
 
-test('run uses a listed full ID before the highlighted row without lookup', async (t) => {
+test('run reads a listed full ID with its team key before the highlighted row', async (t) => {
   const result = await runQuery(t, { query: 'bit-1', row: 'OTHER-2 Other' });
   assert.equal(result.code, 0);
-  assert.equal(result.fetches.length, 1);
+  assert.equal(result.fetches.length, 2);
+  assert.equal(result.fetches[1].key, 'bit-only');
   assert.ok(result.calls.some((call) => call[0] === '/task' && call.includes('BIT-1 [M]')));
 });
 
@@ -484,20 +488,24 @@ test('run handles each bare number rule', async (t) => {
     assert.equal(result.code, 0);
     const task = result.calls.find((call) => call[0] === '/task');
     assert.equal(task?.[2] ?? null, expected ? `${expected} [M]` : null);
-    assert.equal(result.fetches.length, expected && expected !== 'BIT-1' ? 2 : 1);
+    assert.equal(result.fetches.length, expected ? 2 : 1);
+    if (row) assert.equal(result.fetches[1].key, 'list-only');
   }
 });
 
 test('missing issues log and notify without a task or worktree', async (t) => {
   const result = await runQuery(t, { query: 'IC-1516', missing: true });
-  assert.equal(result.code, 0);
+  assert.equal(result.code, 1);
   assert.deepEqual(result.logs, ['worktree-from-linear: issue IC-1516 not found']);
   assert.ok(result.calls.some((call) => call.includes('notification') && call.includes(result.logs[0])));
   assert.equal(result.calls.some((call) => call[0] === '/task' || call.includes('plan-worktree') || call.includes('apply-worktree')), false);
 });
 
 test('unknown team routing fails before an ID request', async (t) => {
-  await assert.rejects(runQuery(t, { query: 'UNKNOWN-1' }), /configure issue team routing for UNKNOWN/);
+  const result = await runQuery(t, { query: 'UNKNOWN-1' });
+  assert.equal(result.code, 1);
+  assert.match(result.logs[0], /configure issue team routing for UNKNOWN/);
+  assert.equal(result.fetches.length, 1);
 });
 
 test('empty lists still open the picker and can load an ID', async (t) => {
@@ -521,7 +529,12 @@ async function showHere(t, { hostless = false } = {}) {
   const host = await hostServer(t);
   const fake = slotExec({ paneTokens: hostTokens(host.socketPath), ...(hostless ? { processInfo: SHELL_FRONT } : {}) });
   const logs = [];
-  const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo',
+  const cacheEnv = { HOME: dir };
+  const loaded = loadListConfig(dir, '/repo', cacheEnv);
+  const cache = issueCache(loaded.config, { env: cacheEnv, workspace: loaded.workspace });
+  cache.write([{ identifier: 'BIT-1', title: 'Cached title' }]);
+  let listFetches = 0;
+  const code = await run({ env: { HOME: dir, HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo',
     HERDR_WFP_MODE: 'show', HERDR_WFP_WORKSPACE: WS,
     HERDR_PLUGIN_CONTEXT_JSON: '{"workspace_id":"wrong","focused_pane_id":"wrong:p1"}' },
     exec: (cmd, args, opts) => {
@@ -532,14 +545,23 @@ async function showHere(t, { hostless = false } = {}) {
         return { status: 0, stdout: WORKTREE_OUT };
       }
       return fake.exec(cmd, args, opts);
-    }, fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
-    select: async (issues) => issues[0],
+    }, fetchFn: async (_url, opts) => {
+      assert.equal(JSON.parse(opts.body).variables.id, undefined, 'show must not look up the cached row');
+      listFetches++;
+      return { ok: true, text: async () => SAMPLE };
+    },
+    select: async (issues, options) => {
+      assert.equal(issues[0].title, 'Cached title');
+      await options.refresh();
+      return issues[0];
+    },
     selectWorktree: () => assert.fail('show must not choose a worktree'), log: (m) => logs.push(m),
   });
+  assert.equal(listFetches, 1);
   return { code, logs, calls: fake.calls, host };
 }
 
-test('show delivers to the invoking workspace with showIssueDetails false', async (t) => {
+test('show uses the cached row without an extra read and respects showIssueDetails false', async (t) => {
   const result = await showHere(t);
   assert.equal(result.code, 0, result.logs.join('\n'));
   assert.equal(result.host.seen.length, 1);
@@ -584,7 +606,7 @@ test('a mapped team works outside Git and normalizes a linked mapped checkout', 
     return inner(cmd, args, opts);
   };
   assert.equal(await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/outside' }, exec,
-    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    fetchFn: sampleFetch,
     select: async (issues) => issues[0], log: () => {},
   }), 0);
   const plan = calls.find((call) => call[1] === 'plan-worktree');
@@ -596,7 +618,7 @@ test('a bad mapped path never falls back to the invoking repository', async (t) 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { exec, calls } = fakeExec();
   await assert.rejects(run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
-    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    fetchFn: sampleFetch,
     select: async (issues) => issues[0], log: () => {},
   }), /explicit invoking checkout/);
   assert.equal(calls.some((call) => call.includes('plan-worktree') || call.includes('apply-worktree')), false);
@@ -607,7 +629,7 @@ test('workspace issue metadata does not rename Crew labels or replace Crew token
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { exec, calls } = fakeExec();
   await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
-    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    fetchFn: sampleFetch,
     select: async (issues) => issues[0], log: () => {},
   });
   const reports = calls.filter((call) => call.includes('report-metadata'));

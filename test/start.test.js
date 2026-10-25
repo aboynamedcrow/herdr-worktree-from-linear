@@ -9,6 +9,8 @@ import { run } from '../lib/run.js';
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'IC-220', title: 'Start agent', state: { name: 'Todo' } },
 ] } } });
+const SINGLE = JSON.stringify({ data: { issue: JSON.parse(SAMPLE).data.issues.nodes[0] } });
+const sampleFetch = async (_url, options) => ({ ok: true, text: async () => JSON.parse(options.body).variables.id ? SINGLE : SAMPLE });
 const MESSAGE = 'task new: IC-220 /worktree w2 w2:p1 test-account';
 const STARTING = 'Starting IC-220 through task new. This can take minutes.';
 
@@ -89,7 +91,7 @@ else if (command === 'fzf') {
   assert.equal(paneEnv.HERDR_WFP_START_PANE, 'w1:p1');
   assert.equal(open.args.join(' ').includes('synthetic-key'), false);
   const picker = () => invoke([
-    '--import', `data:text/javascript,${encodeURIComponent(`globalThis.fetch = async () => ({ ok: true, text: async () => ${JSON.stringify(SAMPLE)} });`)}`,
+    '--import', `data:text/javascript,${encodeURIComponent(`globalThis.fetch = async (_url, options) => ({ ok: true, text: async () => JSON.parse(options.body).variables.id ? ${JSON.stringify(SINGLE)} : ${JSON.stringify(SAMPLE)} });`)}`,
     resolve('bin/picker.js'),
   ], { ...paneEnv, HERDR_PANE_ID: 'w1:p9',
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: 'w1:p9' }) });
@@ -135,8 +137,10 @@ test('task exit 2 prints its message, notifies, and makes the picker exit 1', (t
   assert.equal(f.calls().filter((call) => call.command === 'task').length, 1);
 });
 
-test('start strips picker variables, allows bootstrap time, and preserves stdout failures', async () => {
-  const env = { HERDR_WFP_MODE: 'start', HERDR_WFP_CWD: '/repo', HOME: '/home/test',
+test('start strips picker variables, allows bootstrap time, and preserves stdout failures', async (t) => {
+  const taskHome = mkdtempSync(join(tmpdir(), 'wfl-start-env-'));
+  t.after(() => rmSync(taskHome, { recursive: true, force: true }));
+  const env = { HERDR_WFP_MODE: 'start', HERDR_WFP_CWD: '/repo', HOME: taskHome,
     HERDR_WFP_START_PANE: 'w1:p1', HERDR_WFP_FUTURE: 'remove',
     HERDR_PLUGIN_ROOT: '/picker', HERDR_PLUGIN_STATE_DIR: '/picker-state', HERDR_PLUGIN_FUTURE: 'remove',
     HERDR_SOCKET_PATH: '/socket', HERDR_BIN_PATH: 'herdr', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY',
@@ -145,13 +149,13 @@ test('start strips picker variables, allows bootstrap time, and preserves stdout
   const logs = [];
   const code = await run({ env, select: async (issues) => issues[0],
     selectWorktree: () => assert.fail('no worktree choice'), log: (m) => logs.push(m),
-    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    fetchFn: sampleFetch,
     exec: (cmd, args, opts) => {
       if (cmd === 'git') return { status: 0, stdout: 'worktree /repo\nHEAD abc\n' };
       if (cmd === 'herdr') { assert.equal(args[0], 'notification'); return { status: 0 }; }
-      assert.equal(cmd, '/home/test/dot/bin/task');
+      assert.equal(cmd, join(taskHome, 'dot', 'bin', 'task'));
       assert.deepEqual(logs, [STARTING], 'progress must print before task starts');
-      assert.deepEqual(opts.env, { HOME: '/home/test', HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1',
+      assert.deepEqual(opts.env, { HOME: taskHome, HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1',
         HERDR_SOCKET_PATH: '/socket', HERDR_BIN_PATH: 'herdr', TASK_LINEAR_KEY_ENV: 'LINEAR_API_KEY',
         KEEP_ME: 'preserved', HERDR_PLUGIN: 'preserved', HERDR_WFP: 'preserved', LINEAR_API_KEY: 'synthetic-key' });
       assert.equal(opts.timeout, 3000000);
@@ -170,7 +174,7 @@ test('start refuses a missing captured pane despite the picker context', async (
         LINEAR_API_KEY: 'synthetic-key', HERDR_PANE_ID: 'w1:p9',
         HERDR_PLUGIN_CONTEXT_JSON: '{"focused_pane_id":"w1:p9"}' },
       select: async (issues) => issues[0], log: (message) => logs.push(message),
-      fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+      fetchFn: sampleFetch,
       exec: (cmd, args) => {
         assert.equal(cmd, 'git', 'no task or worktree command may run');
         assert.deepEqual(args, ['-C', '/repo', 'worktree', 'list', '--porcelain']);
