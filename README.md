@@ -320,10 +320,20 @@ Linear workspaces need one request for each key. Each ID that the team key filte
 costs one more request at every probe. An ID with an old team key, or a missing issue,
 is such a miss.
 
-Budget, for one credential: 8 hosts with 3 IDs each, all in the background, cost 12
-probes per hour. One focused pane, or one open full view, costs up to 60 probes per hour.
-Each changed ID adds one full request. Before this fetcher, the same 8 hosts cost 480
-requests per hour.
+Budget, for one credential. Each ID is due on its own schedule, counted from the first
+time a host showed it. IDs that became due in the same 10 s tick share one probe. The
+leader does not align the schedules. For 8 hosts with 3 IDs each, all in the background:
+
+| The hosts | Probes per hour |
+|---|---|
+| started together, so all 24 IDs share one schedule | 12 |
+| started at different times, each host's 3 IDs together | 96 |
+| showed every ID at a different time | up to 288 |
+
+One focused pane, or one open full view, adds up to 60 probes per hour for its IDs. A
+probe that finds a changed ID, or an ID with no cache entry, adds one full request per
+credential. Each ID that the team key filter misses adds one lookup per probe. Before
+this fetcher, each host fetched every minute: 8 hosts cost 480 requests per hour.
 
 **You start the viewer yourself.** In the pane you picked, run:
 
