@@ -39,6 +39,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
   "issueLimit": 500,
   "recentDoneHours": 24,
   "teamKey": "BIT",
+  "repos": { "BIT": "/home/you/bit-repo" },
   "idTeamKey": "IC",
   "assignedToMe": true,
   "includeTriage": true,
@@ -80,6 +81,17 @@ herdr plugin install tdi/herdr-worktree-from-linear
   Without a matching row, the picker looks for `IC-1516` when this key is `IC`.
   If absent, it uses `teamKey`. With neither key, a bare number selects only a matching row.
   A full ID uses its own team. It ignores both keys.
+- `repos`: optional. Map a Linear team key to an absolute repository path.
+  The picker uses the selected issue's team after selection.
+
+  ```json
+  "repos": { "WIN": "/home/you/windmill", "DOCS": "/home/you/docs" }
+  ```
+
+  An unmapped team uses the invoking repository. Both paths resolve to the main worktree.
+  A mapped team works from a non-Git directory. The mapped repository still needs a Plus project policy.
+  API key selection stays separate. The issue list uses the invoking repository's key or the default key.
+  `start` uses `task new` in the invoking pane. `show` uses the invoking workspace.
 - `assignedToMe`: optional. When `true`, only list issues assigned to you (the
   API key's user). Default `false` (all assignees).
 - `includeTriage`: optional. When `true`, also list issues in the triage state
@@ -414,6 +426,31 @@ process.
 The older entrypoint (`bin/issue.js`, herdr pane id `issue`) still works.
 Herdr opens a pane and passes the identifier as `HERDR_WFP_ISSUE`.
 The pane renders the same view and holds until you close it. It owns no slot and publishes nothing.
+
+## Sidebar issue label
+
+Creating or opening an issue worktree publishes a `linear` workspace metadata token, such as `BIT-1234`.
+The token has no TTL. It remains until the workspace closes.
+A metadata failure prints a warning. The worktree action still succeeds.
+The plugin leaves workspace names, Crew tokens, tab labels, and pane labels unchanged.
+
+To show the token, add `$linear` to `[ui.sidebar.spaces].rows` in `~/.config/herdr/config.toml`.
+Run `herdr config check`. Then run `herdr server reload-config`.
+Add the token to your existing rows. This example uses Herdr's default layout:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status", "$linear"],
+]
+```
+
+- The plugin never edits Herdr config. You configure the token once.
+- Useful mainly when your branch names bury or truncate the identifier: the
+  `branch` token already shows it otherwise.
+- To drop the label, use the workspace id from `herdr workspace list`:
+  `herdr workspace report-metadata <id> --source plugin:tdi.worktree-from-linear --clear-token linear`.
 
 ## Develop
 

@@ -6,6 +6,7 @@
   "issueLimit": 500,
   "recentDoneHours": 24,
   "teamKey": "BIT",
+  "repos": { "BIT": "/home/you/bit-repo" },
   "idTeamKey": "BIT",
   "fzfLayout": "down",
   "placement": "right",

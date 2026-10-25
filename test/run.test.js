@@ -24,7 +24,7 @@ function fakeExec() {
   const calls = [];
   const exec = (cmd, args = [], opts = {}) => {
     calls.push([cmd, ...args]);
-    if (cmd === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: '/repo\n', stderr: '' };
+    if (cmd === 'git' && args.includes('--porcelain')) return { status: 0, stdout: `worktree ${args[1]}\nHEAD abc\n`, stderr: '' };
     return backend.reply(cmd, args, opts) || { status: 0, stdout: '', stderr: '' };
   };
   return { exec, calls };
@@ -51,8 +51,8 @@ test('run selects the Linear API key using the resolved repo root', async () => 
   }));
   const { exec: baseExec } = fakeExec();
   const exec = (cmd, args = []) => {
-    if (cmd === 'git' && args.includes('--show-toplevel')) {
-      return { status: 0, stdout: '/repo/HSYS\n', stderr: '' };
+    if (cmd === 'git' && args.includes('--porcelain')) {
+      return { status: 0, stdout: 'worktree /repo/HSYS\nHEAD abc\n', stderr: '' };
     }
     return baseExec(cmd, args);
   };
@@ -67,6 +67,38 @@ test('run selects the Linear API key using the resolved repo root', async () => 
     LINEAR_API_KEY_DEFAULT: 'test-key-default',
   };
   assert.equal(await run({ env, exec, fetchFn, log: () => {} }), 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A linked checkout and its main checkout can match different key rules. The key
+// follows the invoking checkout, as it did before main-worktree selection.
+test('run selects the Linear API key from the linked checkout, not the main worktree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wfl-run-'));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({
+    linearApiKeyEnvByPath: [{ contains: 'hsys', env: 'LINEAR_API_KEY_MATCH' }],
+    linearApiKeyEnvDefault: 'LINEAR_API_KEY_DEFAULT',
+  }));
+  const { exec: baseExec, calls } = fakeExec();
+  const exec = (cmd, args = []) => {
+    if (cmd === 'git' && args.includes('--porcelain')) {
+      return { status: 0, stdout: 'worktree /repos/shared-api\nHEAD abc\n\nworktree /worktrees/hsys/shared-api\nHEAD def\n', stderr: '' };
+    }
+    return baseExec(cmd, args);
+  };
+  const fetchFn = async (_url, options) => {
+    assert.equal(options.headers.Authorization, 'test-key-1');
+    return { ok: true, status: 200, text: async () => SAMPLE };
+  };
+  const env = {
+    HERDR_PLUGIN_CONFIG_DIR: dir,
+    HERDR_WFP_CWD: '/worktrees/hsys/shared-api',
+    HERDR_BIN_PATH: 'herdr',
+    LINEAR_API_KEY_MATCH: 'test-key-1',
+    LINEAR_API_KEY_DEFAULT: 'test-key-default',
+  };
+  assert.equal(await run({ env, exec, fetchFn, select: async (list) => list[0], log: () => {} }), 0);
+  const plan = calls.find((c) => c[1] === 'plan-worktree');
+  assert.deepEqual(plan.slice(2, 4), ['--cwd', '/repos/shared-api']);   // Plus still plans from main.
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -143,7 +175,7 @@ function slotExec({ worktreeExists = false, processInfo = HOST_FRONT, paneTokens
   const exec = (cmd, args = [], opts = {}) => {
     calls.push([cmd, ...args]);
     options.push(opts);
-    if (cmd === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: '/repo\n', stderr: '' };
+    if (cmd === 'git' && args.includes('--porcelain')) return { status: 0, stdout: `worktree ${args[1]}\nHEAD abc\n`, stderr: '' };
     const shared = backend.reply(cmd, args, opts, { checkout: worktreeExists, output: WORKTREE_OUT });
     if (shared) return shared;
     if (args[0] === 'tab' && args[1] === 'list') {
@@ -333,6 +365,55 @@ test('run is a no-op when the user cancels', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('run routes the worktree to the repo mapped to the issue team', async () => {
+  const dir = keyDir({ repos: { BIT: '/mapped-repo' } });
+  const { exec, calls } = fakeExec();
+  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
+  assert.equal(code, 0);
+  const create = calls.find((c) => c[1] === 'plan-worktree');
+  assert.ok(create.includes('/mapped-repo'));
+  assert.ok(!create.includes('/repo'));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('run falls back to the invoking repo for an unmapped team', async () => {
+  const dir = keyDir({ repos: { OTHER: '/elsewhere' } });
+  const { exec, calls } = fakeExec();
+  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (list) => list[0], log: () => {} });
+  assert.equal(code, 0);
+  assert.ok(calls.find((c) => c[1] === 'plan-worktree').includes('/repo'));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('run labels the new workspace with the issue identifier', async () => {
+  const dir = keyDir();
+  const { exec, calls } = fakeExec();
+  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_BIN_PATH: 'herdr' }, exec, fetchFn, select: async (l) => l[0], log: () => {} });
+  const report = calls.find((c) => c.includes('report-metadata'));
+  assert.ok(report, 'reports workspace metadata');
+  assert.deepEqual(report, ['herdr', 'workspace', 'report-metadata', 'w9',
+    '--source', 'plugin:tdi.worktree-from-linear', '--token', 'linear=BIT-1']);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('run still succeeds when the sidebar label cannot be reported', async () => {
+  const dir = keyDir();
+  const { exec: inner } = fakeExec();
+  const exec = (cmd, args = []) => (args[0] === 'workspace'
+    ? { status: 2, stdout: '', stderr: 'unrecognized subcommand\n' }
+    : inner(cmd, args));
+  const fetchFn = async () => ({ ok: true, status: 200, text: async () => SAMPLE });
+  const warnings = [];
+  const logs = [];
+  const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec, fetchFn, select: async (l) => l[0], log: (m) => logs.push(m), warn: (m) => warnings.push(m) });
+  assert.equal(code, 0);
+  assert.match(warnings[0], /sidebar issue label failed/);
+  assert.ok(logs.some((m) => /created worktree for BIT-1/.test(m)), 'still reports the worktree it made');
+  rmSync(dir, { recursive: true, force: true });
+});
 
 test('cancelling the shared candidate picker never applies or delivers', async () => {
   const dir = keyDir(SLOT_CONFIG);
@@ -360,7 +441,7 @@ async function runQuery(t, { query, row = '', config = {}, missing = false, list
     HERDR_WFP_START_PANE: 'w1:p1', TASK_BIN: '/task', LIST_KEY: 'list-only', IC_KEY: 'ic-only', BIT_KEY: 'bit-only' };
   const code = await run({ env, log: (m) => logs.push(m), exec: (cmd, args, opts) => {
     calls.push([cmd, ...args]);
-    if (cmd === 'git') return { status: 0, stdout: '/repo\n' };
+    if (cmd === 'git') return { status: 0, stdout: 'worktree /repo\nHEAD abc\n' };
     if (cmd === 'sh') return { status: 0 };
     if (cmd === 'fzf') return { status: cancel ? 130 : 0, stdout: `${query}\n${row}\n` };
     if (cmd === '/task') return { status: 0, stdout: 'Started' };
@@ -487,4 +568,51 @@ test('show rejects a missing or bad workspace before opening the picker', async 
     exec: () => ({ status: 1, stderr: 'workspace not found' }),
     select: () => assert.fail('missing workspace must not open picker'),
   }), /workspace not found/);
+});
+
+test('a mapped team works outside Git and normalizes a linked mapped checkout', async (t) => {
+  const dir = keyDir({ repos: { BIT: '/mapped/linked' } });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { exec: inner, calls } = fakeExec();
+  const exec = (cmd, args, opts) => {
+    if (cmd === 'git') {
+      assert.ok(args.includes('--porcelain'));
+      return args[1] === '/outside'
+        ? { status: 1, stdout: '', stderr: 'not a repository' }
+        : { status: 0, stdout: 'worktree /mapped/main\n\nworktree /mapped/linked\n', stderr: '' };
+    }
+    return inner(cmd, args, opts);
+  };
+  assert.equal(await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/outside' }, exec,
+    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    select: async (issues) => issues[0], log: () => {},
+  }), 0);
+  const plan = calls.find((call) => call[1] === 'plan-worktree');
+  assert.equal(plan[plan.indexOf('--cwd') + 1], '/mapped/main');
+});
+
+test('a bad mapped path never falls back to the invoking repository', async (t) => {
+  const dir = keyDir({ repos: { BIT: 'relative/path' } });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { exec, calls } = fakeExec();
+  await assert.rejects(run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
+    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    select: async (issues) => issues[0], log: () => {},
+  }), /explicit invoking checkout/);
+  assert.equal(calls.some((call) => call.includes('plan-worktree') || call.includes('apply-worktree')), false);
+});
+
+test('workspace issue metadata does not rename Crew labels or replace Crew tokens', async (t) => {
+  const dir = keyDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { exec, calls } = fakeExec();
+  await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo' }, exec,
+    fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    select: async (issues) => issues[0], log: () => {},
+  });
+  const reports = calls.filter((call) => call.includes('report-metadata'));
+  assert.equal(reports.length, 1);
+  assert.deepEqual(reports[0], ['herdr', 'workspace', 'report-metadata', 'w9',
+    '--source', 'plugin:tdi.worktree-from-linear', '--token', 'linear=BIT-1']);
+  assert.equal(calls.some((call) => call.includes('rename') || call.some((arg) => arg.startsWith('crew_'))), false);
 });
