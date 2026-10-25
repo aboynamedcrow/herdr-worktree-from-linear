@@ -44,6 +44,14 @@ export async function main({
   env = process.env,
   cwd = process.cwd(),
   install = installHandlers,
+  start = startHost,
+  publish = publishHost,
+  unpublish = unpublishHost,
+  exec = spawnSyncExec,
+  show = showIssue,
+  holdInput = hold,
+  open = openInLinear,
+  output = process.stdout,
 } = {}) {
   const context = resolveHostContext(argv, env, cwd);
   if (!context.ok) {
@@ -62,31 +70,47 @@ export async function main({
   let shownIssue = null;
   let stopFullRender = null;
   let labelId = null;
+  const stopFull = () => {
+    const stop = stopFullRender;
+    stopFullRender = null;
+    shownIssue = null;
+    stop?.();
+  };
   const showFull = (issue, onKey) => {
+    stopFull();
     shownIssue = issue;
-    stopFullRender?.();
-    process.stdout.write(CLEAR);
-    stopFullRender = showIssue(issue, { onKey });
+    output.write(CLEAR);
+    stopFullRender = show(issue, { onKey });
   };
   const render = (view, onKey) => {
     if (view.selected !== labelId) {
       labelId = view.selected;
       const label = `${baseLabel}${labelId ? ` · ${labelId}` : ''}`;
-      spawnSyncExec(herdrBin, ['pane', 'rename', context.paneId, label], { timeout: 5000 });
+      exec(herdrBin, ['pane', 'rename', context.paneId, label], { timeout: 5000 });
     }
     if (full) {
-      // The open issue changed: draw it again. An issue that left the list stays as it is.
+      const switched = view.selected !== fullId;
+      if (switched) {
+        fullId = view.selected;
+        stopFull();
+        if (fullId === null) full = false;
+      }
       const next = view.issues.get(fullId);
-      if (next && JSON.stringify(next) !== JSON.stringify(shownIssue)) showFull(next, onKey);
-      return;
+      if (full) {
+        if (next && JSON.stringify(next) !== JSON.stringify(shownIssue)) showFull(next, onKey);
+        else if (switched) output.write(`${CLEAR}Loading ${fullId}...\n`);
+      }
+      // Set the id after drawing. setFull can emit another view synchronously.
+      if (switched) void host.setFull(fullId);
+      if (full) return;
     }
-    process.stdout.write(CLEAR);
-    process.stdout.write(view.ids.length || view.override
-      ? formatIssueList(view, process.stdout.columns || 80)
+    output.write(CLEAR);
+    output.write(view.ids.length || view.override
+      ? formatIssueList(view, output.columns || 80)
       : `${ready(context.checkout).slice(CLEAR.length)}${view.error ? `${view.error}\n` : ''}`);
   };
 
-  const started = await startHost({
+  const started = await start({
     paneId: context.paneId,
     configDir: context.configDir,
     checkout: context.checkout,
@@ -108,21 +132,21 @@ export async function main({
   ({ host } = started);
   // Both halves are bounded and neither can throw.
   install(() => {
-    unpublishHost(host, { herdrBin });
+    unpublish(host, { herdrBin });
     host.close();
   });
 
   // Publishing is how the picker finds this host at all, so a host that cannot publish is
   // not a usable host: say so and return the shell rather than sit here undiscoverable —
   // and stop listening on the way out, rather than leaving a socket nobody can find.
-  const published = publishHost(host, { herdrBin });
+  const published = publish(host, { herdrBin });
   if (!published.ok) {
     process.stderr.write(`issue host could not publish itself on ${host.paneId}: ${published.error}\n`);
     host.close();
     return 1;
   }
 
-  process.stdout.write(ready(host.checkout));
+  output.write(ready(host.checkout));
   function onKey(key) {
     const action = listKeyAction(key);
     if (action === 'refresh') { void host.refresh(); return; }
@@ -130,12 +154,10 @@ export async function main({
       if (action === 'full' || key === 0x1b) {
         full = false;
         fullId = null;
-        shownIssue = null;
-        stopFullRender?.();
-        stopFullRender = null;
+        stopFull();
         void host.setFull(null);
         render(host.view(), onKey);
-      } else if (action === 'open') openInLinear(shownIssue);
+      } else if (action === 'open') open(shownIssue);
       return;
     }
     if (action === 'next') host.select(1);
@@ -152,10 +174,10 @@ export async function main({
     }
     if (action === 'open') {
       const view = host.view();
-      openInLinear(view?.issues.get(view.selected));
+      open(view?.issues.get(view.selected));
     }
   }
-  hold(onKey);
+  holdInput(onKey);
   host.startList();
   return 0;
 }

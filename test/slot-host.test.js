@@ -18,11 +18,132 @@ import { deliverIssueDetails } from '../lib/slot.js';
 import { HOST_SCRIPT } from '../lib/hostwire.js';
 import { CLEAR } from '../lib/viewer.js';
 import { PTY_WRAPPER, ptyAvailable, until } from './pty.mjs';
+import { main } from '../bin/slot-host.js';
 
 const WS = 'w9';
 const TAB = 'w9:t1';
 const PANE = 'w9:p2';
 
+async function fakeHostView(t, { reenter = false } = {}) {
+  const configDir = tempDir(t, 'wfl-view-cfg-');
+  const checkout = tempDir(t, 'wfl-view-wt-');
+  const alpha = { identifier: 'IC-1', title: 'Alpha', url: 'https://linear.app/a/issue/IC-1' };
+  const beta = { identifier: 'IC-2', title: 'Beta', url: 'https://linear.app/a/issue/IC-2' };
+  let current = { ids: ['IC-1', 'IC-2'], selected: 'IC-1', issues: new Map([['IC-1', alpha], ['IC-2', beta]]), override: null, error: '' };
+  let onUpdate;
+  let key;
+  let out = '';
+  const events = [];
+  const fullIds = [];
+  const opened = [];
+  const renames = [];
+  const host = {
+    checkout,
+    view: () => current,
+    setFull: (id) => {
+      fullIds.push(id);
+      if (reenter) onUpdate(current);
+    },
+    startList: () => onUpdate(current),
+    close: () => {},
+  };
+  const code = await main({
+    argv: ['--pane', PANE, '--config-dir', configDir, '--cwd', checkout], env: {},
+    install: () => {},
+    start: async (options) => { onUpdate = options.onListUpdate; return { ok: true, host }; },
+    publish: () => ({ ok: true }),
+    exec: (command, args) => { renames.push([command, ...args]); return { status: 0 }; },
+    show: (issue, options) => {
+      assert.equal(options.onKey, key);
+      events.push(['render', issue.identifier, issue.title]);
+      return () => events.push(['stop', issue.identifier, issue.title]);
+    },
+    holdInput: (onKey) => { key = onKey; },
+    open: (issue) => { if (issue) opened.push(issue.url); },
+    output: { columns: 80, write: (text) => { out += text; } },
+  });
+  assert.equal(code, 0);
+  return {
+    alpha, beta, events, fullIds, opened, renames,
+    screen: () => lastScreen(out),
+    key: (value) => key(value),
+    update: (patch = {}) => { current = { ...current, ...patch }; onUpdate(current); },
+  };
+}
+
+test('a full view switch stops the old render once and renders the selected issue once', async (t) => {
+  const view = await fakeHostView(t, { reenter: true });
+  view.key(0x0d);
+  view.update({ selected: 'IC-2' });
+  view.update();
+  assert.deepEqual(view.events, [['render', 'IC-1', 'Alpha'], ['stop', 'IC-1', 'Alpha'], ['render', 'IC-2', 'Beta']]);
+  assert.deepEqual(view.fullIds, ['IC-1', 'IC-2']);
+  assert.equal(view.renames.at(-1).at(-1), 'Issue / Utility · IC-2');
+  view.key(0x6f);
+  assert.deepEqual(view.opened, [view.beta.url]);
+});
+
+test('the full view redraws changed JSON once and leaves equal JSON on screen', async (t) => {
+  const view = await fakeHostView(t);
+  view.key(0x0d);
+  view.update({ selected: 'IC-2' });
+  const changed = { ...view.beta, title: 'Beta revised' };
+  view.update({ issues: new Map([['IC-2', changed]]) });
+  view.update({ issues: new Map([['IC-2', { ...changed }]]) });
+  assert.deepEqual(view.events, [
+    ['render', 'IC-1', 'Alpha'], ['stop', 'IC-1', 'Alpha'], ['render', 'IC-2', 'Beta'],
+    ['stop', 'IC-2', 'Beta'], ['render', 'IC-2', 'Beta revised'],
+  ]);
+  assert.deepEqual(view.fullIds, ['IC-1', 'IC-2']);
+});
+
+test('a full view switch clears old details and waits for the selected issue', async (t) => {
+  const view = await fakeHostView(t);
+  view.key(0x0d);
+  view.update({ selected: 'IC-2', issues: new Map([['IC-1', view.alpha]]) });
+  assert.equal(view.screen(), 'Loading IC-2...\n');
+  assert.deepEqual(view.events, [['render', 'IC-1', 'Alpha'], ['stop', 'IC-1', 'Alpha']]);
+  assert.deepEqual(view.fullIds, ['IC-1', 'IC-2']);
+  view.key(0x6f);
+  assert.deepEqual(view.opened, []);
+  view.update({ issues: new Map([['IC-2', view.beta]]) });
+  view.update();
+  assert.deepEqual(view.events.at(-1), ['render', 'IC-2', 'Beta']);
+  assert.equal(view.events.length, 3);
+  view.key(0x6f);
+  assert.deepEqual(view.opened, [view.beta.url]);
+});
+
+test('null selection stops the full render and returns to ready text', async (t) => {
+  const view = await fakeHostView(t);
+  view.key(0x0d);
+  view.update({ selected: null, ids: [], issues: new Map() });
+  assert.deepEqual(view.events, [['render', 'IC-1', 'Alpha'], ['stop', 'IC-1', 'Alpha']]);
+  assert.deepEqual(view.fullIds, ['IC-1', null]);
+  assert.match(view.screen(), /Ready in/);
+  view.key(0x6f);
+  assert.deepEqual(view.opened, []);
+  view.update();
+  assert.equal(view.events.length, 2);
+});
+
+for (const exitKey of [0x1b, 0x0d]) {
+  for (const loading of [false, true]) {
+    test(`key ${exitKey} leaves the switched full view with loading=${loading}`, async (t) => {
+      const view = await fakeHostView(t);
+      view.key(0x0d);
+      view.update({ selected: 'IC-2', ...(loading ? { issues: new Map() } : {}) });
+      view.key(exitKey);
+      assert.deepEqual(view.fullIds, ['IC-1', 'IC-2', null]);
+      assert.match(view.screen(), /▸ IC-2/);
+      const events = [...view.events];
+      view.update({ issues: new Map([['IC-2', view.beta]]) });
+      assert.deepEqual(view.events, events, 'late details do not reopen the full view');
+      assert.equal(view.events.filter(([event, id]) => event === 'stop' && id === 'IC-1').length, 1);
+      assert.equal(view.events.filter(([event, id]) => event === 'stop' && id === 'IC-2').length, loading ? 0 : 1);
+    });
+  }
+}
 
 
 function tempDir(t, prefix) {
@@ -242,10 +363,10 @@ test('full view keeps list keys and shows changes after Enter or Esc', async (t)
   const beforeUpdate = selectedFirst();
   setIds(['IC-1', 'IC-3']);
   assert.ok(await until(() => selectedFirst() > beforeUpdate), stub.calls().join(' | '));
-  assert.ok(screen().includes('Beta') && !screen().includes('▸'), screen());
+  assert.ok(await until(() => screen().includes('Alpha') && !screen().includes('Beta') && !screen().includes('▸')), host.out());
   host.type('o');
   assert.ok(await until(() => existsSync(openLog)), host.out() + host.err());
-  assert.equal(readFileSync(openLog, 'utf8').trim(), 'https://linear.app/a/issue/IC-2');
+  assert.equal(readFileSync(openLog, 'utf8').trim(), 'https://linear.app/a/issue/IC-1');
   host.type('\x1b');
   assert.ok(await until(() => screen().includes('▸ IC-1') && screen().includes('IC-3') && !screen().includes('IC-2')), host.out());
   host.quit();
