@@ -330,8 +330,11 @@ leader does not align the schedules. For 8 hosts with 3 IDs each, all in the bac
 | started at different times, each host's 3 IDs together | 96 |
 | showed every ID at a different time | up to 288 |
 
-One focused pane, or one open full view, adds up to 60 probes per hour for its IDs. A
-probe that finds a changed ID, or an ID with no cache entry, adds one full request per
+One open full view has one ID, so it adds up to 60 probes per hour. A focused pane makes
+every ID it shows fast, each on its own schedule. It adds up to 60 probes per hour for
+each distinct schedule among its IDs. When every ID first appeared at a different time,
+that is 60 times the ID count. A pane with 3 IDs then costs 180 probes per hour. A probe
+that finds a changed ID, or an ID with no cache entry, adds one full request per
 credential. Each ID that the team key filter misses adds one lookup per probe. Before
 this fetcher, each host fetched every minute: 8 hosts cost 480 requests per hour.
 
