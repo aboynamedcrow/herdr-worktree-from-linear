@@ -2,7 +2,8 @@
 import { openPicker, reportOpenFailure } from '../lib/open.js';
 
 try {
-  const result = openPicker(process.env, undefined, { start: process.argv.slice(2).includes('--start') });
+  const flags = process.argv.slice(2);
+  const result = openPicker(process.env, undefined, { start: flags.includes('--start'), show: flags.includes('--show') });
   if (result.stdout) process.stdout.write(result.stdout);
   process.exitCode = 0;
 } catch (error) {

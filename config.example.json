@@ -3,9 +3,10 @@
     { "contains": "hsys", "env": "LINEAR_API_KEY_HSYS" }
   ],
   "linearApiKeyEnvDefault": "LINEAR_API_KEY_EMBER",
-  "issueLimit": 50,
+  "issueLimit": 500,
   "teamKey": "BIT",
   "repos": { "BIT": "/home/you/bit-repo" },
+  "idTeamKey": "BIT",
   "fzfLayout": "down",
   "placement": "right",
   "popupWidth": "80%",
