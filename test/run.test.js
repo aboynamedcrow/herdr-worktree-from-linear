@@ -482,13 +482,14 @@ test('run handles each bare number rule', async (t) => {
   for (const [config, row, expected] of [
     [{ idTeamKey: 'IC', teamKey: 'BIT' }, '', 'IC-1516'],
     [{ teamKey: 'BIT' }, '', 'BIT-1516'], [{}, '', null],
-    [{ idTeamKey: 'IC' }, 'BIT-1 Do it', 'IC-1516'],
+    [{ idTeamKey: 'IC' }, 'BIT-1 Do it', 'BIT-1'],
   ]) {
     const result = await runQuery(t, { query: '1516', row, config });
     assert.equal(result.code, 0);
     const task = result.calls.find((call) => call[0] === '/task');
     assert.equal(task?.[2] ?? null, expected ? `${expected} [M]` : null);
     assert.equal(result.fetches.length, expected ? 2 : 1);
+    if (row) assert.equal(result.fetches[1].key, 'list-only');
   }
 });
 

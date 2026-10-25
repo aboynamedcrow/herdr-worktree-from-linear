@@ -78,8 +78,9 @@ herdr plugin install tdi/herdr-worktree-from-linear
   The plugin reads pages of at most 100 issues. It stops at this limit or the last page.
 - `teamKey`: optional. Restrict the list to one team (e.g. `BIT`).
 - `idTeamKey`: optional. Set the team for a bare number such as `1516`.
-  The fzf picker reads `IC-1516` from Linear when this key is `IC`.
-  If absent, it uses `teamKey`. With neither key, it reads the highlighted issue from Linear.
+  With no highlighted row, the fzf picker reads `IC-1516` from Linear when this key is `IC`.
+  If absent, it uses `teamKey`. A highlighted row wins over a bare number.
+  With neither key and no highlighted row, a bare number cancels.
   A full ID uses its own team. It ignores both keys.
 - `repos`: optional. Map a Linear team key to an absolute repository path.
   The picker uses the selected issue's team after selection.
@@ -146,7 +147,8 @@ the herdr server's inherited environment.
 
 For ID lookups and issue-detail views, also configure `linearApiKeyEnvByTeam` as in the complete
 example above. Identifier-based routing takes precedence over path inference.
-The initial picker list uses repository routing. A typed ID lookup uses its team route.
+The initial picker list uses repository routing. A fresh read of a listed row uses the same list key.
+A typed ID lookup uses its team route.
 No key values are copied between workspaces or persisted by this routing.
 
 Without `linearApiKeyEnvByPath` or `linearApiKeyEnvDefault`, the plugin uses the legacy key order.
@@ -184,8 +186,9 @@ Map that team in `linearApiKeyEnvByTeam` when you use team routing.
 A missing issue or a failed read prints a message and sends a notification.
 The action returns status 1. It creates no worktree and starts no task.
 
-A bare number in fzf uses `idTeamKey`, then `teamKey`, before the highlighted row.
-Without either team, it reads the highlighted issue from Linear. With no row, it cancels.
+A highlighted row in fzf wins over a bare number.
+Without a highlighted row, a bare number uses `idTeamKey`, then `teamKey`.
+With neither team and no row, it cancels.
 Without fzf, enter a row number or a full ID at the prompt.
 A valid row number wins over a bare-number lookup.
 Esc or Ctrl-C in fzf cancels the action.

@@ -257,8 +257,8 @@ test('two cache writers replace one complete file and leave no temporary file', 
 });
 
 for (const query of ['bit-1', '1']) {
-  test(`typed ${query} matching a cached row reads Linear`, async (t) => {
-    const f = fixture(t, { idTeamKey: 'BIT' });
+  test(`query ${query} reads the selected cached issue fresh`, async (t) => {
+    const f = fixture(t, { idTeamKey: 'IC' });
     f.cache.write([OLD]);
     const fetched = deferred();
     const picker = fakeFzf(t, { query, selected: OLD });
@@ -454,3 +454,55 @@ test('an absent HOME disables the cache without reading the real home', (t) => {
   cache.write([LIVE]);
   assert.equal(existsSync(dirname(f.cache.path)), false);
 });
+
+
+for (const mode of ['pick', 'start']) {
+  test(`${mode} reads a listed team absent from the team map with the list key`, async (t) => {
+    const f = fixture(t, { linearApiKeyEnvByTeam: { IC: 'IC_KEY' }, idTeamKey: 'IC' });
+    f.env.HERDR_WFP_MODE = mode;
+    f.cache.write([OLD]);
+    const fetched = deferred();
+    const picker = fakeFzf(t, { query: '1', selected: OLD });
+    const reads = [];
+    const job = startRun(t, f, picker, async (_url, opts) => {
+      const body = JSON.parse(opts.body);
+      assert.equal(opts.headers.Authorization, f.env.LIST_KEY);
+      if (body.variables.id) {
+        reads.push(body.variables.id);
+        return reply({ issue: node(LIVE) });
+      }
+      return fetched.promise;
+    });
+    await picker.started;
+    picker.close();
+    fetched.resolve(reply({ issues: { nodes: [node(LIVE)] } }));
+    assert.equal(await job.pending, 0);
+    assert.deepEqual(reads, ['BIT-1']);
+    if (mode === 'pick') {
+      const plan = job.calls.find((call) => call.includes('plan-worktree'));
+      assert.ok(plan);
+      assert.equal(plan[plan.indexOf('--name') + 1], LIVE.title);
+      assert.equal(plan[plan.indexOf('--issue') + 1], LIVE.identifier);
+    } else {
+      assert.ok(job.calls.some((call) => call[0] === '/task' && call[2] === 'BIT-1 [M]'));
+    }
+  });
+
+  test(`${mode} refuses a typed ID absent from the team map before an issue read`, async (t) => {
+    const f = fixture(t, { linearApiKeyEnvByTeam: { IC: 'IC_KEY' } });
+    f.env.HERDR_WFP_MODE = mode;
+    f.cache.write([OLD]);
+    const fetched = deferred();
+    const picker = fakeFzf(t, { query: 'bit-1', selected: OLD });
+    const job = startRun(t, f, picker, async (_url, opts) => {
+      assert.equal(JSON.parse(opts.body).variables.id, undefined, 'the unmapped typed ID must fail before lookup');
+      return fetched.promise;
+    });
+    await picker.started;
+    picker.close();
+    fetched.resolve(reply({ issues: { nodes: [node(LIVE)] } }));
+    assert.equal(await job.pending, 1);
+    assert.match(job.logs[0], /configure issue team routing for BIT/);
+    assert.equal(job.calls.some((call) => call.includes('plan-worktree') || call[0] === '/task'), false);
+  });
+}

@@ -117,13 +117,18 @@ test('full ID wins over another highlighted row and accepts lowercase', async ()
   assert.equal(await pick('ic-1516', ISSUES[1]), 'IC-1516');
 });
 
-test('bare numbers use the configured team before a selected row', async () => {
+test('bare numbers use the configured team only without a selected row', async () => {
   assert.equal(await pick('1516', null, { idTeamKey: 'ic', teamKey: 'BIT' }), 'IC-1516');
   assert.equal(await pick('1516', null, { teamKey: 'BIT' }), 'BIT-1516');
   assert.equal(await pick('1516', null), null);
-  assert.equal(await pick('1516', ISSUES[1], { idTeamKey: 'IC' }), 'IC-1516');
+  assert.equal(await pick('1516', ISSUES[1], { idTeamKey: 'IC' }), ISSUES[1]);
   assert.equal(await pick('title', ISSUES[1]), ISSUES[1]);
-  assert.equal(await pick('1516', ISSUES[1]), 'BIT-988');
+  assert.equal(await pick('1516', ISSUES[1]), ISSUES[1]);
+});
+
+test('a bare number with a team keeps the highlighted issue instead of another exact ID', async () => {
+  const highlighted = { ...ISSUES[0], identifier: 'IC-1545' };
+  assert.equal(await pick('154', highlighted, { idTeamKey: 'IC' }, 0, [highlighted]), highlighted);
 });
 
 test('empty lists permit ID lookup and Esc or Ctrl-C cancels', async () => {
