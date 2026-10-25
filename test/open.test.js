@@ -75,3 +75,34 @@ test('missing and changed invocation contexts refuse without opening', (t) => {
     assert.equal(n, 1);
   }
 });
+
+test('show opens the picker with the invoking workspace in explicit env arguments', (t) => {
+  const f = fixture(t);
+  const calls = [];
+  openPicker(f.env, (cmd, args) => {
+    calls.push(args);
+    if (args[0] === 'workspace') return { status: 0, stdout: JSON.stringify({ result: {
+      workspace: { workspace_id: 'w1', worktree: { checkout_path: f.dir } },
+    } }) };
+    if (args[0] === 'pane') return { status: 0, stdout: JSON.stringify({ result: {
+      pane: { pane_id: 'w1:p1', workspace_id: 'w1', foreground_cwd: f.dir },
+    } }) };
+    return { status: 0 };
+  }, { show: true });
+  const args = calls.find((args) => args[0] === 'plugin');
+  assert.deepEqual(args.slice(-4), ['--env', 'HERDR_WFP_MODE=show', '--env', 'HERDR_WFP_WORKSPACE=w1']);
+});
+
+test('show refuses invalid or absent workspaces before opening a pane', (t) => {
+  const f = fixture(t);
+  for (const workspace_id of [undefined, '', ' ', 'bad\nworkspace']) {
+    assert.throws(() => openPicker({ ...f.env, HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ ...f.context, workspace_id }) },
+      () => assert.fail('no native call for bad ID'), { show: true }), /valid invoking workspace ID/);
+  }
+  for (const result of [{ workspace: { workspace_id: 'w2' } }, { workspace: { workspace_id: 'w1' } }]) {
+    assert.throws(() => openPicker(f.env, (_cmd, args) => {
+      assert.deepEqual(args, ['workspace', 'get', 'w1']);
+      return { status: 0, stdout: JSON.stringify({ result }) };
+    }, { show: true }), /identity changed|checkout path/);
+  }
+});
