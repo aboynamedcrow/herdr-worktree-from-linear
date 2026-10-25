@@ -43,7 +43,7 @@ if (command === 'herdr') {
 } else if (command === 'git') console.log(env.HOME);
 else if (command === 'fzf') {
   if (env.CANCEL === '1') process.exit(130);
-  console.log('IC-220  Start agent');
+  console.log('\\nIC-220  Start agent');
 } else if (command === 'task') {
   if (env.TASK_STATUS === '2') {
     console.error('task new: refused: no room');

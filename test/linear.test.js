@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, buildIssueByIdBody, fetchIssue, fetchIssueBatch, threadComments } from '../lib/linear.js';
+import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, buildIssueByIdBody, fetchIssue, fetchIssueBatch, threadComments, fetchPickerIssue } from '../lib/linear.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', state: { name: 'In Progress' }, assignee: { displayName: 'Darek' }, team: { key: 'BIT' } },
@@ -36,7 +36,7 @@ test('buildIssuesBody includes the triage state only when includeTriage', () => 
 test('parseIssues maps nodes and defaults missing fields', () => {
   const issues = parseIssues(SAMPLE);
   assert.equal(issues.length, 2);
-  assert.deepEqual(issues[0], { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', stateName: 'In Progress', assignee: 'Darek', teamKey: 'BIT' });
+  assert.deepEqual(issues[0], { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', stateName: 'In Progress', stateType: '', stateColor: '', project: '', assignee: 'Darek', teamKey: 'BIT' });
   assert.equal(issues[1].assignee, '');
 });
 
@@ -214,4 +214,75 @@ test('a batch fetch still fails when an old-identifier lookup hits another error
   await assert.rejects(() => fetchIssueBatch({ linearApiKey: 'k' }, ['HSYS-2'], async (_url, opts) => (
     JSON.parse(opts.body).variables?.id ? reply({ errors: [{ message: 'Rate limited' }] }) : reply({ data: { i0: { nodes: [] } } })
   )), /GraphQL error.*Rate limited/);
+});
+
+test('list pages pass the cursor and stop at the issue limit', async () => {
+  const calls = [];
+  const result = await listIssues({ linearApiKey: 'k', issueLimit: 102 }, async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    calls.push(body);
+    const firstPage = calls.length === 1;
+    const nodes = Array.from({ length: firstPage ? 100 : 3 }, (_, i) => ({ identifier: `IC-${(firstPage ? 0 : 100) + i + 1}` }));
+    return reply({ data: { issues: { nodes, pageInfo: { hasNextPage: true, endCursor: firstPage ? 'cursor-1' : 'cursor-2' } } } });
+  });
+  assert.equal(result.length, 102);
+  assert.equal(result[100].identifier, 'IC-101');
+  assert.equal(result[101].identifier, 'IC-102');
+  assert.deepEqual(calls.map((body) => body.variables), [{ first: 100, after: null }, { first: 2, after: 'cursor-1' }]);
+  assert.match(calls[0].query, /after: \$after/);
+  assert.match(calls[0].query, /pageInfo \{ hasNextPage endCursor \}/);
+});
+
+test('list stops at the last page below the limit', async () => {
+  let calls = 0;
+  const result = await listIssues({ linearApiKey: 'k', issueLimit: 500 }, async (_url, opts) => {
+    calls++;
+    assert.deepEqual(JSON.parse(opts.body).variables, { first: 100, after: calls === 1 ? null : 'cursor' });
+    return reply({ data: { issues: { nodes: [{ identifier: `IC-${calls}` }],
+      pageInfo: { hasNextPage: calls === 1, endCursor: 'cursor' } } } });
+  });
+  assert.deepEqual(result.map((issue) => issue.identifier), ['IC-1', 'IC-2']);
+  assert.equal(calls, 2);
+});
+
+test('paging refuses a missing or repeated cursor', async () => {
+  for (const endCursor of [null, 'same']) {
+    await assert.rejects(listIssues({ linearApiKey: 'k', issueLimit: 500 }, async () => reply({
+      data: { issues: { nodes: [], pageInfo: { hasNextPage: true, endCursor } } },
+    })), /no new issue cursor/);
+  }
+});
+
+test('picker ID lookup asks for row fields and resolves old team keys', async () => {
+  let calls = 0;
+  const issue = await fetchPickerIssue({ linearApiKey: 'k' }, 'OLD-1', async (_url, opts) => {
+    calls++;
+    const body = JSON.parse(opts.body);
+    assert.deepEqual(body.variables, { id: 'OLD-1' });
+    assert.match(body.query, /issue\(id: \$id\)/);
+    assert.match(body.query, /state \{ name type color \}/);
+    assert.match(body.query, /project \{ name \}/);
+    assert.match(body.query, /branchName/);
+    return reply({ data: { issue: { identifier: 'NEW-1', branchName: 'new', state: { name: 'Done', type: 'completed', color: '#123456' }, project: { name: 'Project' } } } });
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual([issue.identifier, issue.stateType, issue.stateColor, issue.project, issue.branchName], ['NEW-1', 'completed', '#123456', 'Project', 'new']);
+});
+
+test('picker lookup returns null only for a missing issue', async () => {
+  for (const body of [NOT_FOUND, { data: { issue: null } }]) {
+    assert.equal(await fetchPickerIssue({ linearApiKey: 'k' }, 'IC-1', async () => reply(body)), null);
+  }
+  await assert.rejects(fetchPickerIssue({ linearApiKey: 'k' }, 'IC-1', async () => reply({ errors: [{ message: 'Rate limited' }] })), /GraphQL error/);
+  await assert.rejects(fetchPickerIssue({ linearApiKey: 'k' }, 'IC-1', async () => ({ ok: false, status: 403, text: async () => 'forbidden' })), /API error 403/);
+});
+
+test('list stops at issueLimit without requiring another cursor', async () => {
+  let calls = 0;
+  const issues = await listIssues({ linearApiKey: 'k', issueLimit: 1 }, async () => {
+    calls++;
+    return reply({ data: { issues: { nodes: [{ identifier: 'IC-1' }], pageInfo: { hasNextPage: true } } } });
+  });
+  assert.equal(issues.length, 1);
+  assert.equal(calls, 1);
 });

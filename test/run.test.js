@@ -346,3 +346,145 @@ test('cancelling the shared candidate picker never applies or delivers', async (
     assert.equal(calls.some((c) => c[1] === 'apply-worktree' || c[1] === 'pane' || c[1] === 'tab'), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+async function runQuery(t, { query, row = '', config = {}, missing = false, list = true, cancel = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'wfl-query-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({
+    linearApiKeyEnvDefault: 'LIST_KEY', linearApiKeyEnvByTeam: { IC: 'IC_KEY', BIT: 'BIT_KEY' }, ...config,
+  }));
+  const calls = [];
+  const fetches = [];
+  const logs = [];
+  const env = { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo', HERDR_WFP_MODE: 'start',
+    HERDR_WFP_START_PANE: 'w1:p1', TASK_BIN: '/task', LIST_KEY: 'list-only', IC_KEY: 'ic-only', BIT_KEY: 'bit-only' };
+  const code = await run({ env, log: (m) => logs.push(m), exec: (cmd, args, opts) => {
+    calls.push([cmd, ...args]);
+    if (cmd === 'git') return { status: 0, stdout: '/repo\n' };
+    if (cmd === 'sh') return { status: 0 };
+    if (cmd === 'fzf') return { status: cancel ? 130 : 0, stdout: `${query}\n${row}\n` };
+    if (cmd === '/task') return { status: 0, stdout: 'Started' };
+    assert.equal(cmd, 'herdr');
+    assert.equal(args[0], 'notification');
+    assert.ok(opts.timeout > 0);
+    return { status: 0 };
+  }, fetchFn: async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    fetches.push({ body, key: opts.headers.Authorization });
+    if (body.variables.id) return { ok: true, text: async () => JSON.stringify(missing
+      ? { errors: [{ message: 'Entity not found: Issue' }] }
+      : { data: { issue: { identifier: body.variables.id, title: 'Found', branchName: 'found' } } }) };
+    return { ok: true, text: async () => list ? SAMPLE : '{"data":{"issues":{"nodes":[]}}}' };
+  } });
+  return { code, calls, fetches, logs };
+}
+
+test('run loads a missing lowercase ID once with its team key', async (t) => {
+  const result = await runQuery(t, { query: 'ic-1516', row: 'BIT-1 Do it' });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.fetches.map((request) => [request.body.variables.id, request.key]), [[undefined, 'list-only'], ['IC-1516', 'ic-only']]);
+  assert.ok(result.calls.some((call) => call[0] === '/task' && call.includes('IC-1516 [M]')));
+});
+
+test('run uses a listed full ID before the highlighted row without lookup', async (t) => {
+  const result = await runQuery(t, { query: 'bit-1', row: 'OTHER-2 Other' });
+  assert.equal(result.code, 0);
+  assert.equal(result.fetches.length, 1);
+  assert.ok(result.calls.some((call) => call[0] === '/task' && call.includes('BIT-1 [M]')));
+});
+
+test('run handles each bare number rule', async (t) => {
+  for (const [config, row, expected] of [
+    [{ idTeamKey: 'IC', teamKey: 'BIT' }, '', 'IC-1516'],
+    [{ teamKey: 'BIT' }, '', 'BIT-1516'], [{}, '', null],
+    [{ idTeamKey: 'IC' }, 'BIT-1 Do it', 'BIT-1'],
+  ]) {
+    const result = await runQuery(t, { query: '1516', row, config });
+    assert.equal(result.code, 0);
+    const task = result.calls.find((call) => call[0] === '/task');
+    assert.equal(task?.[2] ?? null, expected ? `${expected} [M]` : null);
+    assert.equal(result.fetches.length, expected && expected !== 'BIT-1' ? 2 : 1);
+  }
+});
+
+test('missing issues log and notify without a task or worktree', async (t) => {
+  const result = await runQuery(t, { query: 'IC-1516', missing: true });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.logs, ['worktree-from-linear: issue IC-1516 not found']);
+  assert.ok(result.calls.some((call) => call.includes('notification') && call.includes(result.logs[0])));
+  assert.equal(result.calls.some((call) => call[0] === '/task' || call.includes('plan-worktree') || call.includes('apply-worktree')), false);
+});
+
+test('unknown team routing fails before an ID request', async (t) => {
+  await assert.rejects(runQuery(t, { query: 'UNKNOWN-1' }), /configure issue team routing for UNKNOWN/);
+});
+
+test('empty lists still open the picker and can load an ID', async (t) => {
+  const result = await runQuery(t, { query: 'IC-1516', list: false });
+  assert.equal(result.code, 0);
+  assert.equal(result.fetches.length, 2);
+  assert.equal(result.logs[0], 'worktree-from-linear: no active issues');
+  assert.ok(result.calls.some((call) => call[0] === 'fzf'));
+});
+
+test('Esc keeps the cancel result and skips lookup', async (t) => {
+  const result = await runQuery(t, { query: 'IC-1516', cancel: true });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.logs, ['worktree-from-linear: cancelled']);
+  assert.equal(result.fetches.length, 1);
+});
+
+async function showHere(t, { hostless = false } = {}) {
+  const dir = keyDir({ ...SLOT_CONFIG, showIssueDetails: false, issueSlotSettleMs: 20, issueSlotPollMs: 20 });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const host = await hostServer(t);
+  const fake = slotExec({ paneTokens: hostTokens(host.socketPath), ...(hostless ? { processInfo: SHELL_FRONT } : {}) });
+  const logs = [];
+  const code = await run({ env: { HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_WFP_CWD: '/repo',
+    HERDR_WFP_MODE: 'show', HERDR_WFP_WORKSPACE: WS,
+    HERDR_PLUGIN_CONTEXT_JSON: '{"workspace_id":"wrong","focused_pane_id":"wrong:p1"}' },
+    exec: (cmd, args, opts) => {
+      assert.equal(args.includes('plan-worktree') || args.includes('apply-worktree'), false);
+      if (args[0] === 'workspace' && args[1] === 'get') {
+        fake.calls.push([cmd, ...args]);
+        assert.equal(args[2], WS);
+        return { status: 0, stdout: WORKTREE_OUT };
+      }
+      return fake.exec(cmd, args, opts);
+    }, fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
+    select: async (issues) => issues[0],
+    selectWorktree: () => assert.fail('show must not choose a worktree'), log: (m) => logs.push(m),
+  });
+  return { code, logs, calls: fake.calls, host };
+}
+
+test('show delivers to the invoking workspace with showIssueDetails false', async (t) => {
+  const result = await showHere(t);
+  assert.equal(result.code, 0, result.logs.join('\n'));
+  assert.equal(result.host.seen.length, 1);
+  assert.equal(result.host.seen[0].pane, SLOT);
+  assert.equal(result.host.seen[0].issue, 'BIT-1');
+  assert.ok(result.calls.some((call) => call[1] === 'workspace' && call[2] === 'get' && call[3] === WS));
+});
+
+test('show delivery failure logs, notifies and returns 1', async (t) => {
+  const result = await showHere(t, { hostless: true });
+  assert.equal(result.code, 1);
+  assert.ok(result.logs.some((message) => /not delivered.*not running the issue host/.test(message)));
+  assert.ok(result.calls.some((call) => call[1] === 'notification' && call.includes(result.logs[0])));
+  assert.equal(result.host.seen.length, 0);
+});
+
+test('show rejects a missing or bad workspace before opening the picker', async () => {
+  for (const workspace of [undefined, '', ' ', 'bad\nworkspace']) {
+    await assert.rejects(run({ env: { HERDR_WFP_MODE: 'show', HERDR_WFP_WORKSPACE: workspace },
+      exec: () => assert.fail('invalid workspace must not call native'),
+      select: () => assert.fail('invalid workspace must not open picker'),
+      fetchFn: () => assert.fail('invalid workspace must not fetch'),
+    }), /valid invoking workspace ID/);
+  }
+  await assert.rejects(run({ env: { HERDR_WFP_MODE: 'show', HERDR_WFP_WORKSPACE: 'gone' },
+    exec: () => ({ status: 1, stderr: 'workspace not found' }),
+    select: () => assert.fail('missing workspace must not open picker'),
+  }), /workspace not found/);
+});
