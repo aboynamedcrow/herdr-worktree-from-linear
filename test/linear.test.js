@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, buildIssueByIdBody, fetchIssue, fetchIssueBatch, threadComments, fetchPickerIssue } from '../lib/linear.js';
+import { buildIssuesBody, parseIssues, listIssues, parseIdentifier, buildIssueBody, buildIssueBatchBody, buildIssueByIdBody, buildUpdatedAtBatchBody, fetchIssue, fetchIssueBatch, fetchUpdatedAtBatch, threadComments, fetchPickerIssue } from '../lib/linear.js';
 
 const SAMPLE = JSON.stringify({ data: { issues: { nodes: [
   { identifier: 'BIT-990', title: 'Label API keys', branchName: 'tdi/bit-990-label', url: 'u1', state: { name: 'In Progress' }, assignee: { displayName: 'Darek' }, team: { key: 'BIT' } },
@@ -146,6 +146,7 @@ test('a batch fetch uses one request for every ID and includes state type and na
   const query = buildIssueBatchBody(ids).query;
   assert.equal((query.match(/issues\(first: 1/g) || []).length, 4);
   assert.match(query, /state \{ type name \}/);
+  assert.match(query, /nodes \{ identifier updatedAt title/);
   assert.throws(() => buildIssueBatchBody(['IC-0']), /invalid issue list identifier/);
   let requests = 0;
   const issues = await fetchIssueBatch({ linearApiKey: 'synthetic' }, ids, async (_url, options) => {
@@ -285,4 +286,33 @@ test('list stops at issueLimit without requiring another cursor', async () => {
   });
   assert.equal(issues.length, 1);
   assert.equal(calls, 1);
+});
+
+test('the updatedAt probe asks for two fields, resolves old ids, and leaves a missing id out', async () => {
+  const ids = ['IC-1', 'HSYS-2', 'HSYS-9'];
+  const probe = buildUpdatedAtBatchBody(ids).query;
+  assert.equal((probe.match(/\{ nodes \{ identifier updatedAt \} \}/g) || []).length, 3);
+  assert.equal(/description|comments/.test(probe), false, 'the probe carries none of the detail fields');
+  const bodies = [];
+  const result = await fetchUpdatedAtBatch({ linearApiKey: 'k' }, ids, async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    assert.equal(opts.headers.Authorization, 'k');
+    if (!body.variables?.id) {
+      return reply({ data: { i0: { nodes: [{ identifier: 'IC-1', updatedAt: '2026-10-24T10:00:00.000Z' }] }, i1: { nodes: [] }, i2: { nodes: [] } } });
+    }
+    assert.match(body.query, /issue\(id: \$id\) \{ identifier updatedAt \}/);
+    return body.variables.id === 'HSYS-2'
+      ? reply({ data: { issue: { identifier: 'ENG-2', updatedAt: '2026-10-24T09:00:00.000Z' } } })
+      : reply(NOT_FOUND);
+  });
+  assert.equal(bodies.length, 3, 'one batch, then one lookup for each miss');
+  assert.deepEqual([...result], [['IC-1', '2026-10-24T10:00:00.000Z'], ['HSYS-2', '2026-10-24T09:00:00.000Z']]);
+  assert.deepEqual(await fetchUpdatedAtBatch({ linearApiKey: 'k' }, [], async () => assert.fail('no request')), new Map());
+  await assert.rejects(() => fetchUpdatedAtBatch({ linearApiKey: 'k' }, ['IC-1'], async () => reply({ errors: [{ message: 'Rate limited' }] })), /GraphQL error/);
+});
+
+test('a batch fetch carries updatedAt so the cache can compare it with the next probe', async () => {
+  const issues = await fetchIssueBatch({ linearApiKey: 'k' }, ['IC-1'], async () => reply({ data: { i0: { nodes: [{ identifier: 'IC-1', updatedAt: '2026-10-24T10:00:00.000Z' }] } } }));
+  assert.equal(issues.get('IC-1').updatedAt, '2026-10-24T10:00:00.000Z');
 });
