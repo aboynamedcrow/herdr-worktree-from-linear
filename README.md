@@ -76,6 +76,7 @@ herdr plugin install tdi/herdr-worktree-from-linear
   New configs should keep key values out of `config.json`. Use the environment-variable options above.
 - `issueLimit`: the most issues the picker lists (default 500).
   The plugin reads pages of at most 100 issues. It stops at this limit or the last page.
+  Linear selects this set by `updatedAt`. The picker sorts only that set by state and creation time.
 - `teamKey`: optional. Restrict the list to one team (e.g. `BIT`).
 - `idTeamKey`: optional. Set the team for a bare number such as `1516`.
   With no highlighted row, the fzf picker reads `IC-1516` from Linear when this key is `IC`.
@@ -105,7 +106,8 @@ herdr plugin install tdi/herdr-worktree-from-linear
   (full-screen), or `"popup"` (centered floating window). `left`/`top` open a
   right/down split then swap into place.
 - `fzfLayout`: `"down"` puts the search bar at the bottom (default).
-  `"top"` puts it at the top. Both use a compact picker window.
+  `"top"` puts it at the top. The issue picker fills its pane with `--height=100%`.
+  The worktree choice picker keeps its adaptive height, capped at 40% of the pane.
 - `showIssueDetails`: optional. When `true`, opening a worktree also shows the
   picked issue's details in a pane your layout already provides (see below).
   Default `false`, and it needs `issueTabLabel` and `issuePaneLabel`.
@@ -172,8 +174,24 @@ Bind the `Worktree from Linear issue` action to a key (herdr `[[keys.command]]`,
 it from the action menu. The picker lists backlog, unstarted, and started issues.
 It also lists triage issues when `includeTriage` is true.
 It includes completed, canceled, and duplicate issues that closed in the last `recentDoneHours` hours.
-The team and assignee filters apply to all these issues. The list orders issues by their last update.
-It reads pages until it reaches `issueLimit` or the last page.
+The team and assignee filters apply to all these issues.
+Linear selects issues by their last update, until `issueLimit` or the last page.
+The picker sorts that set in this state order:
+
+1. Started states with `review` in their name, without regard to letter case.
+2. The started state named `In Progress`.
+3. Other started states.
+4. Triage.
+5. Unstarted (Todo).
+6. Backlog.
+7. Completed (Done).
+8. Canceled.
+9. Duplicate.
+10. Other or empty state types.
+
+Within each state rank, older `createdAt` values come first. Equal dates keep their input order.
+Rows without a valid creation date follow dated rows within that rank. They keep their input order.
+Cached rows, live rows, and the numbered prompt use the same sort.
 An empty list prints `no issues` and still opens the picker.
 You can type an ID even with no listed issues.
 
@@ -202,6 +220,7 @@ The cache holds issue rows, a fetch time, and the list filter values.
 Those values cover team, assignee, triage, recent hours, and issue limit.
 A change to any value requires a new fetch before the picker opens.
 Invalid JSON also requires a new fetch. The next successful fetch replaces that file.
+The cache uses version 2 and stores `createdAt`. A version 1 file requires a fetch before the picker opens.
 
 A cache hit opens fzf at once. The cache has no age limit.
 The header shows `cached <N>m ago` during the fetch.
@@ -246,6 +265,10 @@ IC-1516  ◐ In Progress  Title  [Project] @owner
 ```
 
 Only the icon uses Linear's state color. Unknown state types show the name without an icon.
+The ID column and state column each use the widest value in the current list.
+The state column includes the icon and name. Each title starts at the same column.
+Width counts code points and ignores ANSI color codes. Two spaces separate the columns.
+The live reload can change column widths when the list changes.
 Rows omit the project or owner when absent. Titles use at most 60 code points.
 Longer titles use 59 code points and `…`.
 
