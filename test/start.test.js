@@ -40,7 +40,7 @@ if (command === 'herdr') {
   } else if (args[0] === 'plugin' && args[1] === 'pane') {
     console.log(JSON.stringify({ result: { plugin_pane: { pane: { pane_id: 'w1:p9' } } } }));
   } else if (args[0] !== 'notification') process.exit(99);
-} else if (command === 'git') console.log(env.HOME);
+} else if (command === 'git') console.log('worktree ' + env.HOME + '\\nHEAD abc');
 else if (command === 'fzf') {
   if (env.CANCEL === '1') process.exit(130);
   console.log('\\nIC-220  Start agent');
@@ -147,7 +147,7 @@ test('start strips picker variables, allows bootstrap time, and preserves stdout
     selectWorktree: () => assert.fail('no worktree choice'), log: (m) => logs.push(m),
     fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
     exec: (cmd, args, opts) => {
-      if (cmd === 'git') return { status: 0, stdout: '/repo\n' };
+      if (cmd === 'git') return { status: 0, stdout: 'worktree /repo\nHEAD abc\n' };
       if (cmd === 'herdr') { assert.equal(args[0], 'notification'); return { status: 0 }; }
       assert.equal(cmd, '/home/test/dot/bin/task');
       assert.deepEqual(logs, [STARTING], 'progress must print before task starts');
@@ -173,8 +173,8 @@ test('start refuses a missing captured pane despite the picker context', async (
       fetchFn: async () => ({ ok: true, text: async () => SAMPLE }),
       exec: (cmd, args) => {
         assert.equal(cmd, 'git', 'no task or worktree command may run');
-        assert.deepEqual(args, ['-C', '/repo', 'rev-parse', '--show-toplevel']);
-        return { status: 0, stdout: '/repo\n' };
+        assert.deepEqual(args, ['-C', '/repo', 'worktree', 'list', '--porcelain']);
+        return { status: 0, stdout: 'worktree /repo\nHEAD abc\n' };
       },
     }), /start requires the invoking pane context/);
     assert.deepEqual(logs, []);

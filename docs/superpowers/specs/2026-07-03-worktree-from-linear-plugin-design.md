@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-03
 **Status:** Approved (design)
-**Sibling:** [tdi/herdr-worktree-from-pr](https://github.com/tdi/herdr-worktree-from-pr): same architecture; this mirrors it for Linear issues instead of GitHub PRs.
+**Sibling:** [tdi/herdr-worktree-from-pr](https://github.com/tdi/herdr-worktree-from-pr): same architecture. this mirrors it for Linear issues instead of GitHub PRs.
 
 ## Problem
 
@@ -10,7 +10,7 @@ Starting work on a Linear issue means creating a branch (Linear even suggests th
 
 ## Goal
 
-Keybind → pick an active Linear issue from your teams → create a git worktree on the issue's Linear-suggested branch, based on the repo's default branch → open and focus it. Worktree only. Composes with `tdi.worktree-setup` (fires on `worktree.created` to run per-repo setup).
+Press the keybind. Pick an active Linear issue from your teams. Create a worktree on the issue's suggested branch from the repository's default branch. Open and focus the worktree. Worktree only. Composes with `tdi.worktree-setup` (fires on `worktree.created` to run per-repo setup).
 
 Non-goals (YAGNI):
 - Editing Linear issue state / assignment (read-only).
@@ -34,8 +34,8 @@ Non-goals (YAGNI):
 
 ## Herdr integration constraints (learned shipping worktree-from-pr, verified live)
 
-- **Pass the repo to the picker pane via `--env HERDR_WFP_CWD=<repo>`, NOT `--cwd`.** The pane command `["node","bin/picker.js"]` is relative to the plugin root; `--cwd` would break its resolution. `open.js` reads the repo from its own (reliable) action context and passes it as env; `resolveRepo` prefers `HERDR_WFP_CWD` over the pane's own context JSON (which points at the plugin install dir).
-- Overlay panes DO get an interactive PTY, so fzf/readline work.
+- **Pass the repo to the picker pane via `--env HERDR_WFP_CWD=<repo>`, NOT `--cwd`.** The pane command `["node","bin/picker.js"]` is relative to the plugin root. `--cwd` would break its resolution. `open.js` reads the repo from its action context. It passes the repo through the environment. `resolveRepo` prefers `HERDR_WFP_CWD` over the pane's own context JSON (which points at the plugin install dir).
+- Overlay panes have an interactive PTY, so fzf/readline work.
 - Keybinds: `[[keys.command]]` with `type = "plugin_action"`, `command = "tdi.worktree-from-linear.pick"`. Use `prefix+<letter>` (macOS composes `alt`/option). Apply with `herdr server reload-config` (no restart).
 
 ## Plugin manifest (`herdr-plugin.toml`)
@@ -68,19 +68,19 @@ command = ["node", "bin/picker.js"]
 
 **`bin/picker.js`** (orchestrator over `lib/`), via `lib/run.js run({env, exec, fetch, select, log})`:
 
-1. **Config** (`lib/config.js`): load `config.json`; require `linearApiKey`; defaults `issueLimit = 50`, `base = "default"`, `teamKey` unset.
-2. **Resolve repo** (`lib/repo.js`): prefer `HERDR_WFP_CWD`; `git -C <cwd> rev-parse --show-toplevel` → repo root. (No GitHub remote check. Linear is repo-agnostic.)
-3. **List issues** (`lib/linear.js`): POST GraphQL to Linear with the API key; query active issues (state type in `unstarted`,`started`), optional `teamKey` filter, first `issueLimit`, ordered by `updatedAt` desc. Parse into `{ identifier, title, branchName, stateName, assignee, url }`.
-4. **Pick** (`lib/picker.js`): one line per issue: `<identifier>  <title>  [<stateName>] @<assignee>`; fzf if present, else Node `readline`. Map the chosen line back to its issue by leading identifier.
+1. **Config** (`lib/config.js`): load `config.json`. require `linearApiKey`. defaults `issueLimit = 50`, `base = "default"`, `teamKey` unset.
+2. **Resolve repo** (`lib/repo.js`): prefer `HERDR_WFP_CWD`. `git -C <cwd> rev-parse --show-toplevel` → repo root. (No GitHub remote check. Linear is repo-agnostic.)
+3. **List issues** (`lib/linear.js`): POST GraphQL to Linear with the API key. query active issues (state type in `unstarted`,`started`), optional `teamKey` filter, first `issueLimit`, ordered by `updatedAt` desc. Parse into `{ identifier, title, branchName, stateName, assignee, url }`.
+4. **Pick** (`lib/picker.js`): one line per issue: `<identifier>  <title>  [<stateName>] @<assignee>`. fzf if present, else Node `readline`. Map the chosen line back to its issue by leading identifier.
 5. **Resolve base** (`lib/base.js`): from config `base` (default `"default"`):
-   - `"default"` → `git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD` → strip `origin/`; if unset, fall back to `"main"`. Base ref = `origin/<name>`, needs fetch.
+   - `"default"` → `git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD` → strip `origin/`. if unset, fall back to `"main"`. Base ref = `origin/<name>`, needs fetch.
    - `"head"` → base ref = `HEAD`, no fetch.
-   - any other string → explicit branch `<name>`; base ref = `origin/<name>`, needs fetch.
+   - any other string → explicit branch `<name>`. base ref = `origin/<name>`, needs fetch.
    - Returns `{ baseRef, needsFetch, baseBranch }`.
 6. **Create/open worktree** (`lib/worktree.js`):
    - If a worktree for `issue.branchName` already exists (`git worktree list --porcelain`) or the local branch exists → `herdr worktree open --cwd <repo> --branch <branchName> --focus --json`.
-   - Else: if `needsFetch`, `git -C <repo> fetch origin <baseBranch>`; then `herdr worktree create --cwd <repo> --branch <branchName> --base <baseRef> --focus --json`.
-   - Herdr opens + focuses the new workspace; the overlay closes.
+   - Else: if `needsFetch`, `git -C <repo> fetch origin <baseBranch>`. then `herdr worktree create --cwd <repo> --branch <branchName> --base <baseRef> --focus --json`.
+   - Herdr opens + focuses the new workspace. the overlay closes.
 
 ## Module boundaries
 
@@ -88,13 +88,13 @@ command = ["node", "bin/picker.js"]
 |------|----------------|-----------|
 | `bin/open.js` | resolve repo cwd, open the picker overlay pane (`--env`, not `--cwd`) | `HERDR_PLUGIN_CONTEXT_JSON` |
 | `bin/picker.js` | thin: call `run`, map errors to exit code | `lib/run.js` |
-| `lib/run.js` | orchestrate config → repo → list → pick → base → create; injectable `exec`/`fetch`/`select`/`log` | the `lib/` modules |
+| `lib/run.js` | orchestrate config → repo → list → pick → base → create, injectable `exec`/`fetch`/`select`/`log` | the `lib/` modules |
 | `lib/config.js` | load `config.json`, defaults, require `linearApiKey` | `fs` |
 | `lib/repo.js` | repo root from context/`HERDR_WFP_CWD` (pure `parseContextCwd` + exec wrapper) | `child_process` |
 | `lib/linear.js` | build GraphQL query (pure), POST via injected `fetch`, parse issues (pure) | `fetch` |
 | `lib/base.js` | resolve base from config `base` ("default"/"head"/name) → `{ baseRef, needsFetch, baseBranch }` (pure `resolveBase` over `symbolic-ref` output + config) | `child_process` |
 | `lib/worktree.js` | worktree/branch-exists check + fetch + `herdr worktree create --base`/`open` | `child_process`, `HERDR_BIN_PATH`, `git` |
-| `lib/picker.js` | fzf-or-Node selection; format + reverse-map | `child_process` (fzf), `readline` |
+| `lib/picker.js` | fzf-or-Node selection, format + reverse-map | `child_process` (fzf), `readline` |
 | `lib/pane.js` | `openPickerArgs(pluginId, cwd)` → argv with `--env HERDR_WFP_CWD` | none |
 | `lib/exec.js` | `runCmd` spawnSync wrapper | `child_process` |
 
@@ -117,7 +117,7 @@ query($first: Int!) {
 }
 ```
 
-`teamKey`, when set, adds `team: { key: { eq: <teamKey> } }` to the filter. Parse `nodes` → records; missing optional fields default to `''`.
+`teamKey`, when set, adds `team: { key: { eq: <teamKey> } }` to the filter. Parse `nodes` → records. missing optional fields default to `''`.
 
 ## Config (optional `config.json` in `HERDR_PLUGIN_CONFIG_DIR`)
 
@@ -130,7 +130,7 @@ query($first: Int!) {
 }
 ```
 
-`linearApiKey` required (clear error if missing). `issueLimit` default 50. `teamKey` optional. `base` default `"default"`; values: `"default"` (repo default branch), `"head"` (current HEAD, no fetch), or an explicit branch name (e.g. `"develop"`).
+`linearApiKey` required (clear error if missing). `issueLimit` default 50. `teamKey` optional. `base` default `"default"`. values: `"default"` (repo default branch), `"head"` (current HEAD, no fetch), or an explicit branch name (e.g. `"develop"`).
 
 ## Error handling
 
@@ -144,18 +144,18 @@ query($first: Int!) {
 | `git fetch` fails | message with git error, exit non-zero |
 | worktree create/open fails | message with herdr error, exit non-zero |
 
-Status lines go to stdout; `bin/picker.js` catch writes errors to stderr and exits 1.
+Status lines go to stdout. `bin/picker.js` catch writes errors to stderr and exits 1.
 
 ## Testing (node:test + node:assert)
 
-- **linear.test.js**: query builder includes/excludes the `teamKey` filter; `parseIssues` maps sample GraphQL JSON → records; empty/malformed → `[]`; `listIssues` with injected `fetch` (success + non-200 throws).
-- **base.test.js**: `base:"default"` with `symbolic-ref` `origin/main` → `{baseRef:"origin/main", needsFetch:true, baseBranch:"main"}`; symbolic-ref empty → fallback `main`; `base:"head"` → `{baseRef:"HEAD", needsFetch:false}`; `base:"develop"` → `{baseRef:"origin/develop", needsFetch:true, baseBranch:"develop"}`.
-- **config.test.js**: defaults; partial merge; missing `linearApiKey` throws; malformed JSON throws.
-- **repo.test.js**: `parseContextCwd` precedence incl. `HERDR_WFP_CWD`; `resolveRepo` with injected exec.
-- **picker.test.js**: records → lines; chosen line maps back by identifier (identifiers with digits, titles containing brackets).
-- **worktree.test.js**: porcelain sample → exists decision; `create --base <baseRef>` (with and without a preceding fetch, per `needsFetch`) vs `open` argv (injected exec); no-fetch-when-exists.
+- **linear.test.js**: query builder includes/excludes the `teamKey` filter. `parseIssues` maps sample GraphQL JSON → records. empty/malformed → `[]`. `listIssues` with injected `fetch` (success + non-200 throws).
+- **base.test.js**: `base:"default"` with `symbolic-ref` `origin/main` → `{baseRef:"origin/main", needsFetch:true, baseBranch:"main"}`. symbolic-ref empty → fallback `main`. `base:"head"` → `{baseRef:"HEAD", needsFetch:false}`. `base:"develop"` → `{baseRef:"origin/develop", needsFetch:true, baseBranch:"develop"}`.
+- **config.test.js**: defaults. partial merge. missing `linearApiKey` throws. malformed JSON throws.
+- **repo.test.js**: `parseContextCwd` precedence incl. `HERDR_WFP_CWD`. `resolveRepo` with injected exec.
+- **picker.test.js**: records → lines. chosen line maps back by identifier (identifiers with digits, titles containing brackets).
+- **worktree.test.js**: porcelain sample → exists decision. `create --base <baseRef>` (with and without a preceding fetch, per `needsFetch`) vs `open` argv (injected exec). no-fetch-when-exists.
 - **pane.test.js**: `openPickerArgs` emits `--env HERDR_WFP_CWD=<cwd>`, never `--cwd`.
-- **run.test.js**: whole flow with injected `fetch`+`exec`+`select`: lists issues, creates worktree with the issue branch off `origin/<base>`; no-issues and cancel short-circuit to exit 0.
+- **run.test.js**: whole flow with injected `fetch`+`exec`+`select`: lists issues, creates worktree with the issue branch off `origin/<base>`. no-issues and cancel short-circuit to exit 0.
 
 Linear/git/herdr/fzf/TTY are exercised against sample payloads or injected fakes, never live.
 
@@ -173,12 +173,12 @@ test/  *.test.js
 
 ## Prerequisites (README)
 
-- **`fzf`**: the fuzzy picker (`brew install fzf`); required for the intended overlay. Falls back to a numbered prompt.
+- **`fzf`**: the fuzzy picker (`brew install fzf`). required for the intended overlay. Falls back to a numbered prompt.
 - **A Linear personal API key** in the plugin config (`linearApiKey`).
 - **`git`**, **Node.js** (herdr invokes `node`). No `gh` needed.
 
 ## Open runtime unknowns (handled defensively)
 
-- `herdr worktree create --base REF` semantics for a brand-new branch: verified `--base` is accepted by the CLI; confirm the created branch points at `origin/<base>` during a live spin.
+- `herdr worktree create --base REF` semantics for a brand-new branch: verified `--base` is accepted by the CLI. check the created branch points at `origin/<base>` during a live spin.
 - Whether `git symbolic-ref refs/remotes/origin/HEAD` is set in a given clone (only for `base:"default"`): fallback to `main`.
-- Linear API key header form (raw vs `Bearer`): Linear personal keys are raw; confirm against a live call during implementation.
+- Linear API key header form (raw vs `Bearer`): Linear personal keys are raw. check against a live call during implementation.

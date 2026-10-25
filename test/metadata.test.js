@@ -64,3 +64,11 @@ test('reportIssue names a spawn failure rather than calling it exit 1', () => {
   reportIssue('w42', 'BIT-1234', { exec, warn: (m) => warnings.push(m) });
   assert.match(warnings[0], /ENOENT/);
 });
+
+test('reportIssue warns after a thrown command without changing worktree success', () => {
+  const warnings = [];
+  assert.equal(reportIssue('w42', 'BIT-1', {
+    exec() { throw new Error('spawn failure'); }, warn: (message) => warnings.push(message),
+  }), false);
+  assert.match(warnings[0], /spawn failure/);
+});

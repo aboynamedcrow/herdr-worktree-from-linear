@@ -56,6 +56,6 @@ test('repository resolution refuses implicit cwd and strips ambient Git selectio
     assert.equal(opts.env.GIT_CONFIG_COUNT, '0');
     assert.equal(opts.env.SSH_AUTH_SOCK, '/transport');
     assert.ok(opts.timeout > 0);
-    return { status: 0, stdout: '/repo\n' };
+    return { status: 0, stdout: 'worktree /repo\nHEAD abc\n' };
   });
 });

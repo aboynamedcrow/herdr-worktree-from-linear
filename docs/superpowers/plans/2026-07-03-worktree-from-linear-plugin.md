@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a herdr plugin that lists a team's active Linear issues in an overlay picker and creates+focuses a git worktree on the chosen issue's Linear branch, based on a configurable base branch.
+**Goal:** Build a herdr plugin that lists a team's active Linear issues in an overlay picker. Create and focus a worktree on the chosen issue's Linear branch. Use a configurable base branch.
 
 **Architecture:** A keybindable action (`bin/open.js`) resolves the invoking repo from its context and opens an interactive overlay pane (`bin/picker.js`). The orchestration lives in `lib/run.js` with injected `exec`/`fetch`/`select`, so the whole flow is testable without live Linear/git/herdr/fzf. Pure helpers (Linear query+parse, base resolution, branch/worktree argv, picker format, config) sit in focused `lib/` modules.
 
@@ -10,14 +10,14 @@
 
 ## Global Constraints
 
-- `id = "tdi.worktree-from-linear"`; manifest `herdr-plugin.toml`; `min_herdr_version = "0.7.0"`; `platforms = ["linux", "macos"]`.
+- `id = "tdi.worktree-from-linear"`. manifest `herdr-plugin.toml`. `min_herdr_version = "0.7.0"`. `platforms = ["linux", "macos"]`.
 - Node ESM: `package.json` has `"type": "module"`. **Zero** runtime dependencies. Test script `node --test`.
 - Call herdr via `HERDR_BIN_PATH` (fallback `"herdr"`). Use `git` from PATH. No `gh`.
 - Linear: POST GraphQL to `https://api.linear.app/graphql` with header `Authorization: <linearApiKey>` (raw, not `Bearer`).
 - Repo is passed to the picker pane via `--env HERDR_WFP_CWD=<repo>`, **never** `--cwd` (that breaks the relative `node bin/picker.js` command). `resolveRepo` prefers `HERDR_WFP_CWD`.
 - Config (`config.json`): `linearApiKey` (required, clear error if missing), `issueLimit` (default 50), `base` (default `"default"`), `teamKey` (optional).
-- `base` modes: `"default"` → `origin/<repo default branch>` (fetch); `"head"` → `HEAD` (no fetch); any other string → `origin/<that branch>` (fetch).
-- Issue scope: team-wide active issues (state type `unstarted`+`started`), `orderBy: updatedAt`, first `issueLimit`; optional `teamKey` filter.
+- `base` modes: `"default"` → `origin/<repo default branch>` (fetch). `"head"` → `HEAD` (no fetch). any other string → `origin/<that branch>` (fetch).
+- Issue scope: team-wide active issues (state type `unstarted`+`started`), `orderBy: updatedAt`, first `issueLimit`. optional `teamKey` filter.
 - Branch name = Linear's `issue.branchName`.
 - No emojis. No co-author trailers in commits.
 
@@ -25,7 +25,7 @@
 
 | File | Responsibility |
 |------|----------------|
-| `herdr-plugin.toml` | manifest: action `pick` → `bin/open.js`; overlay pane `picker` → `bin/picker.js` |
+| `herdr-plugin.toml` | manifest: action `pick` → `bin/open.js`, overlay pane `picker` → `bin/picker.js` |
 | `package.json` | ESM, no deps, `test` script |
 | `lib/exec.js` | `runCmd` spawnSync wrapper |
 | `lib/config.js` | load `config.json`, defaults, require `linearApiKey` |
@@ -129,10 +129,10 @@ git commit -m "chore: scaffold worktree-from-linear plugin"
 
 ## Task 2: exec + config
 
-**Files:** Create `lib/exec.js`, `lib/config.js`; Test `test/exec.test.js`, `test/config.test.js`
+**Files:** Create `lib/exec.js`, `lib/config.js`. Test `test/exec.test.js`, `test/config.test.js`
 
 **Interfaces:**
-- Produces: `runCmd(cmd, args, opts?) => {status, stdout, stderr}`; `loadConfig(configDir?) => {linearApiKey, issueLimit, base, teamKey?}` (throws if `linearApiKey` missing or JSON malformed).
+- Produces: `runCmd(cmd, args, opts?) => {status, stdout, stderr}`. `loadConfig(configDir?) => {linearApiKey, issueLimit, base, teamKey?}` (throws if `linearApiKey` missing or JSON malformed).
 
 - [ ] **Step 1: `test/exec.test.js`**
 
@@ -194,7 +194,7 @@ test('loadConfig throws on malformed JSON', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify fail**: `node --test test/exec.test.js test/config.test.js` → FAIL (modules not found).
+- [ ] **Step 3: Run to check failure**: `node --test test/exec.test.js test/config.test.js` → FAIL (modules not found).
 
 - [ ] **Step 4: `lib/exec.js`**
 
@@ -244,7 +244,7 @@ export function loadConfig(configDir) {
 }
 ```
 
-- [ ] **Step 6: Run to verify pass**: `node --test test/exec.test.js test/config.test.js` → PASS (6 tests).
+- [ ] **Step 6: Run to check pass**: `node --test test/exec.test.js test/config.test.js` → PASS (6 tests).
 
 - [ ] **Step 7: Commit**
 
@@ -257,11 +257,11 @@ git commit -m "feat: exec wrapper and config loading with required linearApiKey"
 
 ## Task 3: Repo resolution
 
-**Files:** Create `lib/repo.js`; Test `test/repo.test.js`
+**Files:** Create `lib/repo.js`. Test `test/repo.test.js`
 
 **Interfaces:**
 - Consumes: `runCmd` from `lib/exec.js`.
-- Produces: `parseContextCwd(contextJson?, fallbackCwd) => string`; `resolveRepo(env, exec?) => { repoRoot }` (throws if not a git repo). Prefers `env.HERDR_WFP_CWD`.
+- Produces: `parseContextCwd(contextJson?, fallbackCwd) => string`. `resolveRepo(env, exec?) => { repoRoot }` (throws if not a git repo). Prefers `env.HERDR_WFP_CWD`.
 
 - [ ] **Step 1: `test/repo.test.js`**
 
@@ -296,7 +296,7 @@ test('resolveRepo throws when not a git repo', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail**: `node --test test/repo.test.js` → FAIL.
+- [ ] **Step 2: Run to check failure**: `node --test test/repo.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/repo.js`**
 
@@ -343,7 +343,7 @@ export function resolveRepo(env, exec = runCmd) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**: `node --test test/repo.test.js` → PASS (3 tests).
+- [ ] **Step 4: Run to check pass**: `node --test test/repo.test.js` → PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -356,13 +356,13 @@ git commit -m "feat: resolve repo root, preferring HERDR_WFP_CWD"
 
 ## Task 4: Linear GraphQL
 
-**Files:** Create `lib/linear.js`; Test `test/linear.test.js`
+**Files:** Create `lib/linear.js`. Test `test/linear.test.js`
 
 **Interfaces:**
 - Produces:
-  - `buildIssuesBody(issueLimit, teamKey?) => { query: string, variables: { first: number } }` (pure; includes a `team` filter only when `teamKey` is set).
-  - `parseIssues(jsonText) => Array<{identifier, title, branchName, url, stateName, assignee, teamKey}>` (pure; `[]` on empty/malformed/missing nodes).
-  - `listIssues(config, fetchFn?) => Promise<Issue[]>` (POSTs to Linear; throws on non-2xx or GraphQL `errors`).
+  - `buildIssuesBody(issueLimit, teamKey?) => { query: string, variables: { first: number } }` (pure. includes a `team` filter only when `teamKey` is set).
+  - `parseIssues(jsonText) => Array<{identifier, title, branchName, url, stateName, assignee, teamKey}>` (pure. `[]` on empty/malformed/missing nodes).
+  - `listIssues(config, fetchFn?) => Promise<Issue[]>` (POSTs to Linear. throws on non-2xx or GraphQL `errors`).
 
 - [ ] **Step 1: `test/linear.test.js`**
 
@@ -420,7 +420,7 @@ test('listIssues throws on GraphQL errors payload', async () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail**: `node --test test/linear.test.js` → FAIL.
+- [ ] **Step 2: Run to check failure**: `node --test test/linear.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/linear.js`**
 
@@ -480,7 +480,7 @@ export async function listIssues(config, fetchFn = fetch) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**: `node --test test/linear.test.js` → PASS (6 tests).
+- [ ] **Step 4: Run to check pass**: `node --test test/linear.test.js` → PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -493,7 +493,7 @@ git commit -m "feat: Linear GraphQL query, parse, and fetch"
 
 ## Task 5: Base branch resolution
 
-**Files:** Create `lib/base.js`; Test `test/base.test.js`
+**Files:** Create `lib/base.js`. Test `test/base.test.js`
 
 **Interfaces:**
 - Consumes: `runCmd` from `lib/exec.js`.
@@ -535,7 +535,7 @@ test('resolveBase with an explicit branch bases off origin/<name>', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail**: `node --test test/base.test.js` → FAIL.
+- [ ] **Step 2: Run to check failure**: `node --test test/base.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/base.js`**
 
@@ -562,7 +562,7 @@ export function resolveBase(repoRoot, config = {}, exec = runCmd) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**: `node --test test/base.test.js` → PASS (5 tests).
+- [ ] **Step 4: Run to check pass**: `node --test test/base.test.js` → PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -575,14 +575,14 @@ git commit -m "feat: base branch resolution (default/head/named)"
 
 ## Task 6: Picker (format + select)
 
-**Files:** Create `lib/picker.js`; Test `test/picker.test.js`
+**Files:** Create `lib/picker.js`. Test `test/picker.test.js`
 
 **Interfaces:**
 - Consumes: `runCmd` from `lib/exec.js`.
 - Produces:
   - `formatLine(issue) => string`, `formatLines(issues) => string[]`.
   - `lineToIssue(line, issues) => issue | null` (matches leading identifier token).
-  - `select(issues, { exec? }) => Promise<issue | null>` (fzf if present, else Node numbered prompt; `null` on cancel/empty).
+  - `select(issues, { exec? }) => Promise<issue | null>` (fzf if present, else Node numbered prompt. `null` on cancel/empty).
 
 - [ ] **Step 1: `test/picker.test.js`**
 
@@ -610,7 +610,7 @@ test('lineToIssue maps a chosen line back by leading identifier', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail**: `node --test test/picker.test.js` → FAIL.
+- [ ] **Step 2: Run to check failure**: `node --test test/picker.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/picker.js`**
 
@@ -660,7 +660,7 @@ export async function select(issues, { exec = runCmd } = {}) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**: `node --test test/picker.test.js` → PASS (2 tests).
+- [ ] **Step 4: Run to check pass**: `node --test test/picker.test.js` → PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -673,14 +673,14 @@ git commit -m "feat: issue picker formatting and fzf/node selection"
 
 ## Task 7: Worktree create/open with base
 
-**Files:** Create `lib/worktree.js`; Test `test/worktree.test.js`
+**Files:** Create `lib/worktree.js`. Test `test/worktree.test.js`
 
 **Interfaces:**
-- Consumes: `runCmd` from `lib/exec.js`; a base object `{ baseRef, needsFetch, baseBranch }` from `lib/base.js`.
+- Consumes: `runCmd` from `lib/exec.js`. a base object `{ baseRef, needsFetch, baseBranch }` from `lib/base.js`.
 - Produces:
   - `worktreeExistsForBranch(porcelain, branchName) => boolean`.
   - `localBranchExists(repoRoot, branchName, exec?) => boolean`.
-  - `buildWorktreeArgs(exists, repoRoot, branchName, baseRef) => string[]` (open omits `--base`; create includes `--base baseRef`).
+  - `buildWorktreeArgs(exists, repoRoot, branchName, baseRef) => string[]` (open omits `--base`. create includes `--base baseRef`).
   - `createOrOpenWorktree(repoRoot, branchName, base, exec?, herdrBin?) => { exists, branchName, args, stdout }`.
 
 - [ ] **Step 1: `test/worktree.test.js`**
@@ -758,7 +758,7 @@ test('createOrOpenWorktree throws when fetch fails', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify fail**: `node --test test/worktree.test.js` → FAIL.
+- [ ] **Step 2: Run to check failure**: `node --test test/worktree.test.js` → FAIL.
 
 - [ ] **Step 3: `lib/worktree.js`**
 
@@ -801,7 +801,7 @@ export function createOrOpenWorktree(repoRoot, branchName, base, exec = runCmd, 
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**: `node --test test/worktree.test.js` → PASS (7 tests).
+- [ ] **Step 4: Run to check pass**: `node --test test/worktree.test.js` → PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -814,13 +814,13 @@ git commit -m "feat: create/open worktree on the issue branch off a base"
 
 ## Task 8: Orchestrator + entrypoints
 
-**Files:** Create `lib/run.js`, `lib/pane.js`, `bin/open.js`, `bin/picker.js`; Test `test/run.test.js`, `test/pane.test.js`
+**Files:** Create `lib/run.js`, `lib/pane.js`, `bin/open.js`, `bin/picker.js`. Test `test/run.test.js`, `test/pane.test.js`
 
 **Interfaces:**
 - Consumes: `loadConfig`, `resolveRepo`, `listIssues`, `resolveBase`, `createOrOpenWorktree`, `select`, `runCmd`.
 - Produces:
   - `run({ env?, exec?, fetchFn?, select?, log? }) => Promise<number>`.
-  - `openPickerArgs(pluginId?, cwd?) => string[]` (adds `--env HERDR_WFP_CWD=<cwd>` when cwd given; never `--cwd`).
+  - `openPickerArgs(pluginId?, cwd?) => string[]` (adds `--env HERDR_WFP_CWD=<cwd>` when cwd given. never `--cwd`).
 
 - [ ] **Step 1: `test/pane.test.js`**
 
@@ -911,7 +911,7 @@ test('run is a no-op when the user cancels', async () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify fail**: `node --test test/run.test.js test/pane.test.js` → FAIL.
+- [ ] **Step 3: Run to check failure**: `node --test test/run.test.js test/pane.test.js` → FAIL.
 
 - [ ] **Step 4: `lib/pane.js`**
 
@@ -990,7 +990,7 @@ run()
   });
 ```
 
-- [ ] **Step 8: Run to verify pass**: `node --test test/run.test.js test/pane.test.js` → PASS (5 tests).
+- [ ] **Step 8: Run to check pass**: `node --test test/run.test.js test/pane.test.js` → PASS (5 tests).
 
 - [ ] **Step 9: Full suite**: `npm test` → PASS (all tests).
 
