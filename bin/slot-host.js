@@ -27,7 +27,7 @@ function ready(checkout) {
     'Linear issue host\n\n',
     `Ready in ${checkout}.\n`,
     'Pick a Linear issue (Worktree from Linear) and it will appear here.\n\n',
-    'q or Ctrl-C returns this pane to your shell.\n',
+    'r fetches now. q or Ctrl-C returns this pane to your shell.\n',
   ].join('');
 }
 
@@ -58,16 +58,28 @@ export async function main({
   } catch { /* keep the Crew label */ }
   let host;
   let full = false;
+  let fullId = null;
   let shownIssue = null;
   let stopFullRender = null;
   let labelId = null;
-  const render = (view) => {
+  const showFull = (issue, onKey) => {
+    shownIssue = issue;
+    stopFullRender?.();
+    process.stdout.write(CLEAR);
+    stopFullRender = showIssue(issue, { onKey });
+  };
+  const render = (view, onKey) => {
     if (view.selected !== labelId) {
       labelId = view.selected;
       const label = `${baseLabel}${labelId ? ` · ${labelId}` : ''}`;
       spawnSyncExec(herdrBin, ['pane', 'rename', context.paneId, label], { timeout: 5000 });
     }
-    if (full) return;
+    if (full) {
+      // The open issue changed: draw it again. An issue that left the list stays as it is.
+      const next = view.issues.get(fullId);
+      if (next && JSON.stringify(next) !== JSON.stringify(shownIssue)) showFull(next, onKey);
+      return;
+    }
     process.stdout.write(CLEAR);
     process.stdout.write(view.ids.length || view.override
       ? formatIssueList(view, process.stdout.columns || 80)
@@ -80,7 +92,8 @@ export async function main({
     checkout: context.checkout,
     // Rendering happens in this process, from an issue this process fetched. A request
     // asked for an identifier; it did not supply anything to run.
-    onListUpdate: render,
+    onListUpdate: (view) => render(view, onKey),
+    listOptions: { herdrBin },
     // The one-issue host uses this failure path. List mode keeps its last good data.
     onFail: (identifier, reason) => {
       process.stdout.write(CLEAR);
@@ -110,15 +123,18 @@ export async function main({
   }
 
   process.stdout.write(ready(host.checkout));
-  const onKey = (key) => {
+  function onKey(key) {
     const action = listKeyAction(key);
+    if (action === 'refresh') { void host.refresh(); return; }
     if (full) {
       if (action === 'full' || key === 0x1b) {
         full = false;
+        fullId = null;
         shownIssue = null;
         stopFullRender?.();
         stopFullRender = null;
-        render(host.view());
+        void host.setFull(null);
+        render(host.view(), onKey);
       } else if (action === 'open') openInLinear(shownIssue);
       return;
     }
@@ -129,16 +145,16 @@ export async function main({
       const issue = view?.issues.get(view.selected);
       if (issue) {
         full = true;
-        shownIssue = issue;
-        process.stdout.write(CLEAR);
-        stopFullRender = showIssue(issue, { onKey });
+        fullId = view.selected;
+        showFull(issue, onKey);
+        void host.setFull(fullId);
       }
     }
     if (action === 'open') {
       const view = host.view();
       openInLinear(view?.issues.get(view.selected));
     }
-  };
+  }
   hold(onKey);
   host.startList();
   return 0;

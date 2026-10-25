@@ -259,15 +259,71 @@ owns the writes. No native test covers the managed key.
 One pane lists all IDs in config order. The selected issue's details appear below the
 list. The list row stays visible when there is one issue. Press `j` or `k` to select an
 issue. Press Enter for its full view. Press Enter or Esc to return to the list. Press `o`
-to open the shown issue in Linear. Press `q` to return to the shell. The host names its
+to open the shown issue in Linear. Press `r` to fetch the shown issues now, in the list
+and in the full view. Press `q` to return to the shell. The host names its
 own pane with the selected ID. It creates no pane.
-It fetches all listed details in one bounded Linear request per credential when the list
-changes, then once a minute. Mixed Linear workspaces need one request for each key.
-Each ID that the team key filter misses costs one more request at every fetch. An
-ID with an old team key, or a missing issue, is such a miss.
+The full view redraws when its issue changed in Linear. It clears the screen and the
+scrollback first, the same way it does when it opens.
 A failed request keeps the last good details and shows a short error.
 The host selects a delivered ID outside the list until the list changes.
 Native pane behavior is untested.
+
+#### One Linear fetcher per Mac
+
+All issue hosts of one user on one Mac share one fetcher. One host, the leader, calls
+Linear. The other hosts, the followers, read its cache. No extra process runs. The
+leader is one of the hosts, and the fetcher ends with the last host.
+
+The hosts meet in a private directory with mode `0700`. The host takes the first of these:
+
+1. `$WFL_SHARED_DIR`, when set. It must be an absolute path.
+2. `$XDG_RUNTIME_DIR/wfl-fetch`, when that runtime directory exists and is yours.
+3. `wfl-fetch` in the system temporary directory.
+
+A host that cannot create or trust that directory fetches on its own. Its error line
+shows `Fetcher: private, <reason>`.
+
+| File | Writer | Content |
+|---|---|---|
+| `host-<pid>.json` | each host | its pid, its checkout, the shown IDs with the rate it wants for each, and a refresh stamp |
+| `leader.json` | the leader | its pid and a heartbeat |
+| `issues.json` | the leader | the cache: for each ID the `updatedAt`, the details, and the last error |
+
+No file holds an API key. An error text in the cache passes the same redaction as the
+screen.
+
+The lock is `leader.json`. A host creates it with an exclusive link. A follower takes
+the lock in three cases:
+
+- The leader removed it on exit.
+- The leader's process is gone.
+- The heartbeat is older than 90 s.
+
+The leader drops a host whose interest file is older than 5 min. It removes the file
+of a host whose process is gone.
+
+The leader asks Linear for each ID at the fastest rate any host wants:
+
+| The ID is | Rate |
+|---|---|
+| in an open full view, or in a focused pane | every 60 s |
+| in a background list | every 5 min |
+
+Each host asks herdr `pane get <its pane>` for its own `focused` field. It asks at most
+once per 10 s, and only while it shows an ID. A live `herdr pane get` reply on
+2026-10-24 carried `result.pane.focused`. Whether a pane the user looks at reports
+`focused: true` in a native layout is untested.
+
+Each fetch asks Linear for `updatedAt` first, in one bounded request per credential. The
+full details follow only for the IDs that changed, or that have no cache entry. Mixed
+Linear workspaces need one request for each key. Each ID that the team key filter misses
+costs one more request at every probe. An ID with an old team key, or a missing issue,
+is such a miss.
+
+Budget, for one credential: 8 hosts with 3 IDs each, all in the background, cost 12
+probes per hour. One focused pane, or one open full view, costs up to 60 probes per hour.
+Each changed ID adds one full request. Before this fetcher, the same 8 hosts cost 480
+requests per hour.
 
 **You start the viewer yourself.** In the pane you picked, run:
 
