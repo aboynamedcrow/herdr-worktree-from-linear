@@ -8,7 +8,8 @@ test('manifest registers the show action and version 0.6.0', () => {
   assert.ok(action);
   assert.match(action, /^title = "Show Linear issue here"$/m);
   assert.match(action, /^contexts = \["workspace", "tab", "pane"\]$/m);
-  assert.match(action, /^command = \["node", "bin\/open.js", "--show"\]$/m);
+  const command = JSON.parse(/^command = (.+)$/m.exec(action)[1]);
+  assert.deepEqual(command.slice(4), ['node', 'bin/open.js', '--show']);
   assert.match(manifest, /^version = "0.6.0"$/m);
   assert.equal(JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version, '0.6.0');
 });

@@ -9,28 +9,28 @@ platforms = ["linux", "macos"]
 id = "pick"
 title = "Worktree from Linear issue"
 contexts = ["workspace", "tab", "pane"]
-command = ["node", "bin/open.js"]
+command = ["sh", "-c", "exec \"$HOME/dot/bin/agent-service-env\" run --inherit linear-ember,linear-hsys -- \"$@\"", "linear-route", "node", "bin/open.js"]
 
 [[actions]]
 id = "start"
 title = "Start agent on Linear issue"
 contexts = ["workspace", "tab", "pane"]
-command = ["node", "bin/open.js", "--start"]
+command = ["sh", "-c", "exec \"$HOME/dot/bin/agent-service-env\" run --inherit linear-ember,linear-hsys -- \"$@\"", "linear-route", "node", "bin/open.js", "--start"]
 
 [[actions]]
 id = "show"
 title = "Show Linear issue here"
 contexts = ["workspace", "tab", "pane"]
-command = ["node", "bin/open.js", "--show"]
+command = ["sh", "-c", "exec \"$HOME/dot/bin/agent-service-env\" run --inherit linear-ember,linear-hsys -- \"$@\"", "linear-route", "node", "bin/open.js", "--show"]
 
 [[panes]]
 id = "picker"
 title = "Pick a Linear issue"
 placement = "overlay"
-command = ["node", "bin/picker.js"]
+command = ["sh", "-c", "exec \"$HOME/dot/bin/agent-service-env\" run --inherit linear-ember,linear-hsys -- \"$@\"", "linear-route", "node", "bin/picker.js"]
 
 [[panes]]
 id = "issue"
 title = "Linear issue"
 placement = "split"
-command = ["node", "bin/issue.js"]
+command = ["sh", "-c", "exec \"$HOME/dot/bin/agent-service-env\" run --inherit linear-ember,linear-hsys -- \"$@\"", "linear-route", "node", "bin/issue.js"]
