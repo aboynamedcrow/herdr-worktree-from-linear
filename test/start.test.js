@@ -78,8 +78,8 @@ else if (command === 'fzf') {
   assert.match(action, /^title = "Start agent on Linear issue"$/m);
   assert.match(action, /^contexts = \["workspace", "tab", "pane"\]$/m);
   const command = JSON.parse(/^command = (.+)$/m.exec(action)[1]);
-  assert.deepEqual(command, ['node', 'bin/open.js', '--start']);
-  const opened = invoke(command.slice(1));
+  assert.deepEqual(command.slice(4), ['node', 'bin/open.js', '--start']);
+  const opened = invoke(command.slice(5));
   assert.equal(opened.status, 0, opened.stderr);
   const open = calls().find((call) => call.args[0] === 'plugin');
   const paneEnv = Object.fromEntries(open.args.flatMap((arg, i) => {
